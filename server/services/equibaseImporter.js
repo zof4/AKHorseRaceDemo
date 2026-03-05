@@ -41,6 +41,64 @@ const stripHtmlToLines = (html) => {
     .filter(Boolean);
 };
 
+const isLabelLikeLine = (value) =>
+  /^(Jockey|Trainer|Program|Race|Post|Weight|Owner|Silks|Odds|M\/L|ML|Age|Sex|Sire|Dam)\b/i.test(
+    String(value ?? '')
+  );
+
+const isNoiseLine = (value) => {
+  const line = String(value ?? '').trim();
+  if (!line) {
+    return true;
+  }
+  if (isLabelLikeLine(line)) {
+    return true;
+  }
+  if (/^[0-9]+\s*\/\s*[0-9]+$/.test(line)) {
+    return true;
+  }
+  if (/^\d+(\.\d+)?$/.test(line)) {
+    return true;
+  }
+  return false;
+};
+
+const findFirstLikelyHorseName = (blockLines) => {
+  for (let index = 0; index < blockLines.length; index += 1) {
+    const line = String(blockLines[index] ?? '').trim();
+    if (isNoiseLine(line)) {
+      continue;
+    }
+    if (line.length >= 2) {
+      return line;
+    }
+  }
+  return '';
+};
+
+const buildHorseBlocks = (lines) => {
+  const markers = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const postMatch = String(lines[index] ?? '').match(/Post:\s*(\d+)/i);
+    if (!postMatch) {
+      continue;
+    }
+    markers.push({
+      startIndex: index,
+      postPosition: Number(postMatch[1])
+    });
+  }
+
+  return markers.map((marker, index) => {
+    const endIndex = index + 1 < markers.length ? markers[index + 1].startIndex : lines.length;
+    const blockLines = lines.slice(marker.startIndex, endIndex);
+    return {
+      postPosition: marker.postPosition,
+      blockLines
+    };
+  });
+};
+
 const hashString = (value) => {
   let hash = 0;
   for (const char of String(value ?? '')) {
@@ -122,40 +180,20 @@ const parseRacePage = ({ html, raceNumber, trackCode, dateKey, url }) => {
     lines.find((line) => /\b(Mile|Furlong|Yard)\b/i.test(line)) ?? 'Distance TBD';
 
   const horses = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const postMatch = line.match(/Post:\s*(\d+)/i);
-    if (!postMatch) {
-      continue;
-    }
-
-    const postPosition = Number(postMatch[1]);
-    const oddsMatch = line.match(/Odds:\s*([0-9./]+)/i);
+  const horseBlocks = buildHorseBlocks(lines);
+  for (const block of horseBlocks) {
+    const blockText = block.blockLines.join(' ');
+    const oddsMatch = blockText.match(/Odds:\s*([0-9./]+)/i);
     const odds = oddsMatch ? oddsMatch[1].trim() : '';
-
-    let name = '';
-    for (let probe = index + 1; probe < Math.min(lines.length, index + 6); probe += 1) {
-      const candidate = lines[probe];
-      if (/^(Jockey|Trainer|Program|Race|Post|Weight|Owner)\b/i.test(candidate)) {
-        continue;
-      }
-      if (/^[0-9]+\s*\/\s*[0-9]+$/.test(candidate)) {
-        continue;
-      }
-      if (candidate.length >= 2) {
-        name = candidate;
-        break;
-      }
-    }
-
+    const name = findFirstLikelyHorseName(block.blockLines);
     if (!name) {
       continue;
     }
 
     let jockey = null;
     let trainer = null;
-    for (let probe = index + 1; probe < Math.min(lines.length, index + 12); probe += 1) {
-      const candidate = lines[probe];
+    for (const rawLine of block.blockLines) {
+      const candidate = String(rawLine ?? '').trim();
       const jockeyMatch = candidate.match(/^Jockey:\s*(.+)$/i);
       if (jockeyMatch) {
         jockey = jockeyMatch[1].trim();
@@ -168,7 +206,7 @@ const parseRacePage = ({ html, raceNumber, trackCode, dateKey, url }) => {
 
     horses.push({
       name,
-      post_position: postPosition,
+      post_position: block.postPosition,
       jockey,
       trainer,
       morning_line_odds: odds || null

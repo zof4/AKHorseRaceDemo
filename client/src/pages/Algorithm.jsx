@@ -148,6 +148,7 @@ export default function Algorithm() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [dayMode, setDayMode] = useState('today');
   const [loading, setLoading] = useState(true);
+  const [raceSyncing, setRaceSyncing] = useState(false);
   const [refreshingMarket, setRefreshingMarket] = useState(false);
   const [brisnetIntel, setBrisnetIntel] = useState(null);
   const [scratchesIntel, setScratchesIntel] = useState(null);
@@ -192,6 +193,11 @@ export default function Algorithm() {
     () => filteredRaces.find((entry) => entry.id === selectedRaceId) ?? filteredRaces[0] ?? null,
     [filteredRaces, selectedRaceId]
   );
+
+  const totalHorseCount = Array.isArray(race?.horses) ? race.horses.length : 0;
+  const activeHorseCount = Array.isArray(race?.horses)
+    ? race.horses.filter((horse) => !Number(horse.scratched)).length
+    : 0;
 
   const secondsUntilNextRefresh =
     autoRefresh && nextAutoRefreshAt
@@ -473,12 +479,28 @@ export default function Algorithm() {
     }
 
     const sync = async () => {
+      setRaceSyncing(true);
       setError('');
+      setStatus('Loading selected race...');
+      setRace(null);
+      setAnalysis(null);
+      setBrisnetIntel(null);
+      setScratchesIntel(null);
+      setSelectedHorseName('');
+      setSelectedJockeyName('');
+      setInspectorOpen(false);
+      setJockeyInspectorOpen(false);
+      setBetModalOpen(false);
       try {
         await loadRaceDetail(selectedRace.id);
         await runAnalysis(selectedRace.id, bankroll);
+        setStatus('Race loaded.');
       } catch (err) {
         setError(err.message);
+        setAnalysis(null);
+        setStatus('Failed to load selected race.');
+      } finally {
+        setRaceSyncing(false);
       }
     };
 
@@ -617,7 +639,7 @@ export default function Algorithm() {
   }, [race?.id]);
 
   const refreshMarket = async () => {
-    if (!selectedRace || refreshingMarket) {
+    if (!selectedRace || refreshingMarket || raceSyncing) {
       return;
     }
 
@@ -1195,15 +1217,22 @@ export default function Algorithm() {
           </div>
 
           <p className="mt-2 text-xs text-stone-500">Tap a horse to open a full-screen inspector.</p>
+          <p className="mt-1 text-xs text-stone-500">
+            Model ranking shows active horses only: {activeHorseCount} of {totalHorseCount}.
+          </p>
           {Array.isArray(race.horses) && race.horses.some((horse) => Number(horse.scratched)) ? (
             <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">
               <p className="font-semibold">Scratched horses</p>
-              <p className="mt-1">
+              <ul className="mt-1 grid gap-1">
                 {race.horses
                   .filter((horse) => Number(horse.scratched))
-                  .map((horse) => horse.name)
-                  .join(', ')}
-              </p>
+                  .map((horse) => (
+                    <li key={`scratched-${horse.id}`}>
+                      {horse.name}
+                      {horse.jockey ? ` • Jockey: ${horse.jockey}` : ''}
+                    </li>
+                  ))}
+              </ul>
             </div>
           ) : null}
           <div className="mt-3 grid gap-2">
