@@ -111,6 +111,29 @@ const tierToneClasses = {
   'Long-Shot Bet': 'border-rose-200 bg-rose-50'
 };
 
+const STORAGE_KEYS = {
+  lastRaceId: 'hrd:algorithm:lastRaceId',
+  dayMode: 'hrd:algorithm:dayMode'
+};
+
+const loadStoredDayMode = () => {
+  try {
+    const value = window.localStorage.getItem(STORAGE_KEYS.dayMode);
+    return value === 'today' || value === 'tomorrow' ? value : 'today';
+  } catch {
+    return 'today';
+  }
+};
+
+const loadStoredRaceId = () => {
+  try {
+    const parsed = Number(window.localStorage.getItem(STORAGE_KEYS.lastRaceId));
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 function ProbabilityBars({ modelProbability, marketProbability }) {
   const modelWidth = Math.max(4, Math.min(100, Number(modelProbability || 0) * 100));
   const marketWidth = Math.max(4, Math.min(100, Number(marketProbability || 0) * 100));
@@ -146,7 +169,7 @@ export default function Algorithm() {
   const [analysis, setAnalysis] = useState(null);
   const [bankroll, setBankroll] = useState(100);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [dayMode, setDayMode] = useState('today');
+  const [dayMode, setDayMode] = useState(loadStoredDayMode);
   const [loading, setLoading] = useState(true);
   const [raceSyncing, setRaceSyncing] = useState(false);
   const [refreshingMarket, setRefreshingMarket] = useState(false);
@@ -460,18 +483,62 @@ export default function Algorithm() {
   }, []);
 
   useEffect(() => {
-    if (!filteredRaces.length) {
+    if (!races.length) {
       return;
     }
 
-    if (!filteredRaces.some((entry) => entry.id === selectedRaceId)) {
+    const raceFromQuery = races.find((entry) => entry.id === selectedRaceId);
+    if (raceFromQuery) {
+      const raceDateKey = extractRaceDateKey(raceFromQuery);
+      if (raceDateKey === todayKey && dayMode !== 'today') {
+        setDayMode('today');
+      } else if (raceDateKey === tomorrowKey && dayMode !== 'tomorrow') {
+        setDayMode('tomorrow');
+      }
+      return;
+    }
+
+    const restoredRaceId = loadStoredRaceId();
+    const restoredRace = restoredRaceId ? races.find((entry) => entry.id === restoredRaceId) : null;
+    const fallback = restoredRace ?? filteredRaces[0] ?? races[0] ?? null;
+    if (!fallback) {
+      return;
+    }
+
+    const fallbackDateKey = extractRaceDateKey(fallback);
+    if (fallbackDateKey === todayKey && dayMode !== 'today') {
+      setDayMode('today');
+    } else if (fallbackDateKey === tomorrowKey && dayMode !== 'tomorrow') {
+      setDayMode('tomorrow');
+    }
+
+    if (selectedRaceId !== Number(fallback.id)) {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
-        next.set('raceId', String(filteredRaces[0].id));
+        next.set('raceId', String(fallback.id));
         return next;
       });
     }
-  }, [filteredRaces, selectedRaceId, setSearchParams]);
+  }, [races, filteredRaces, selectedRaceId, setSearchParams, dayMode, todayKey, tomorrowKey]);
+
+  useEffect(() => {
+    if (!selectedRace?.id) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.lastRaceId, String(selectedRace.id));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [selectedRace?.id]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.dayMode, dayMode);
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [dayMode]);
 
   useEffect(() => {
     if (!selectedRace) {
