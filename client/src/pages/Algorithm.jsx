@@ -9,6 +9,16 @@ const asScore = (value) => Number(value || 0).toFixed(1);
 const asPoints = (value) => Number(value || 0).toFixed(3);
 const pad = (value) => String(value).padStart(2, '0');
 const normalizeHorseName = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const formatTimestamp = (value) => {
+  if (!value) {
+    return 'Not yet';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'Not yet';
+  }
+  return date.toLocaleString();
+};
 
 const METRIC_LABELS = {
   speed: 'Speed',
@@ -120,6 +130,7 @@ export default function Algorithm() {
   const [scratchesIntel, setScratchesIntel] = useState(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('Waiting for first refresh.');
+  const [lastLiveUpdateAt, setLastLiveUpdateAt] = useState(null);
   const [selectedHorseName, setSelectedHorseName] = useState('');
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [betModalOpen, setBetModalOpen] = useState(false);
@@ -517,6 +528,7 @@ export default function Algorithm() {
       setAnalysis(payload.analysis);
       setBrisnetIntel(payload.market?.brisnet ?? null);
       setScratchesIntel(payload.market?.scratches ?? null);
+      setLastLiveUpdateAt(payload.fetchedAt || new Date().toISOString());
       const warningText =
         Array.isArray(payload.warnings) && payload.warnings.length
           ? ` Warnings: ${payload.warnings.map((warning) => `${warning.provider}: ${warning.message}`).join(' | ')}`
@@ -812,7 +824,7 @@ export default function Algorithm() {
           Presets plus live Equibase cards auto-import for {todayKey} and {tomorrowKey}. Tap any horse tile to inspect
           exact math and historical context.
         </p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="tile">
             <p className="tile-title">Imported Races</p>
             <p className="tile-value">{races.length}</p>
@@ -828,6 +840,10 @@ export default function Algorithm() {
           <div className="tile">
             <p className="tile-title">Bankroll Sim</p>
             <p className="tile-value">${Number(bankroll || 0).toFixed(0)}</p>
+          </div>
+          <div className="tile">
+            <p className="tile-title">Last Live Update</p>
+            <p className="tile-value text-sm">{formatTimestamp(lastLiveUpdateAt)}</p>
           </div>
         </div>
       </article>
@@ -911,7 +927,9 @@ export default function Algorithm() {
         </div>
 
         <p className="mt-2 text-sm text-stone-600">{status}</p>
-        <p className="mt-1 text-xs text-stone-500">Live refresh runs every 15 seconds when auto refresh is enabled.</p>
+        <p className="mt-1 text-xs text-stone-500">
+          Live refresh runs every 15 seconds when auto refresh is enabled. Last update: {formatTimestamp(lastLiveUpdateAt)}.
+        </p>
         {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
       </article>
 

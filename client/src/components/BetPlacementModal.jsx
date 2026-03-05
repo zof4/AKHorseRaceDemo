@@ -38,6 +38,62 @@ const buildInitialSelectionState = (positions) => ({
   partWheelPositions: Array.from({ length: positions }, () => [])
 });
 
+const inRange = (value, min, max, fallback) => {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= min && parsed <= max) {
+    return parsed;
+  }
+  return fallback;
+};
+
+const sanitizeHorseId = (value, allowedHorseIds) => {
+  const parsed = parseId(value);
+  return parsed && allowedHorseIds.has(parsed) ? parsed : null;
+};
+
+const sanitizeHorseIdList = (values, allowedHorseIds, blockedHorseIds = new Set()) => {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const sanitized = [];
+
+  for (const raw of values) {
+    const horseId = sanitizeHorseId(raw, allowedHorseIds);
+    if (!horseId || blockedHorseIds.has(horseId) || seen.has(horseId)) {
+      continue;
+    }
+    seen.add(horseId);
+    sanitized.push(horseId);
+  }
+
+  return sanitized;
+};
+
+const sanitizeSelectionState = (value, positions, allowedHorseIds) => {
+  const source = value && typeof value === 'object' ? value : buildInitialSelectionState(positions);
+  const keyHorseIds = sanitizeHorseIdList(source.keyHorseIds, allowedHorseIds);
+  const keyHorseIdSet = new Set(keyHorseIds);
+  const wheelAnchorHorseId = sanitizeHorseId(source.wheelAnchorHorseId, allowedHorseIds);
+  const wheelAnchorSet = wheelAnchorHorseId ? new Set([wheelAnchorHorseId]) : new Set();
+
+  return {
+    straightPositions: Array.from({ length: positions }, (_, index) =>
+      sanitizeHorseId(source.straightPositions?.[index], allowedHorseIds)
+    ),
+    boxHorseIds: sanitizeHorseIdList(source.boxHorseIds, allowedHorseIds),
+    wheelAnchorHorseId,
+    wheelAnchorPosition: inRange(source.wheelAnchorPosition, 1, positions, 1),
+    wheelOtherHorseIds: sanitizeHorseIdList(source.wheelOtherHorseIds, allowedHorseIds, wheelAnchorSet),
+    keyHorseIds,
+    keyOtherHorseIds: sanitizeHorseIdList(source.keyOtherHorseIds, allowedHorseIds, keyHorseIdSet),
+    partWheelPositions: Array.from({ length: positions }, (_, index) =>
+      sanitizeHorseIdList(source.partWheelPositions?.[index], allowedHorseIds)
+    )
+  };
+};
+
 const findHorseIdByName = (horses, horseName) => {
   const key = normalizeHorseName(horseName);
   if (!key) {
@@ -137,7 +193,9 @@ export default function BetPlacementModal({ isOpen, race, draft, onClose, onBetP
   const [quoting, setQuoting] = useState(false);
   const [placing, setPlacing] = useState(false);
 
-  const horses = race?.horses ?? [];
+  const horses = useMemo(() => (race?.horses ?? []).filter((horse) => !Number(horse.scratched)), [race]);
+  const scratchedHorses = useMemo(() => (race?.horses ?? []).filter((horse) => Number(horse.scratched)), [race]);
+  const allowedHorseIds = useMemo(() => new Set(horses.map((horse) => Number(horse.id))), [horses]);
   const betType = useMemo(() => getBetType(betTypeId), [betTypeId]);
 
   useEffect(() => {
@@ -147,15 +205,25 @@ export default function BetPlacementModal({ isOpen, race, draft, onClose, onBetP
 
     const prefill = derivePrefillFromDraft(draft, horses);
     const initialType = getBetType(prefill.betTypeId);
+    const sanitizedSelections = sanitizeSelectionState(prefill.selections, initialType.positions, allowedHorseIds);
 
     setBetTypeId(initialType.id);
     setBetModifier(prefill.betModifier);
     setBaseAmount(initialType.minBase);
-    setSelectionState(prefill.selections);
+    setSelectionState(sanitizedSelections);
     setQuote(null);
     setError('');
     setSuccess('');
-  }, [isOpen, race, draft, horses]);
+  }, [isOpen, race, draft, horses, allowedHorseIds]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    setSelectionState((previous) => sanitizeSelectionState(previous, betType.positions, allowedHorseIds));
+    setQuote(null);
+  }, [isOpen, betType.positions, allowedHorseIds]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -507,6 +575,11 @@ export default function BetPlacementModal({ isOpen, race, draft, onClose, onBetP
 
           <div className="mt-3 rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
             <h4 className="mb-2 text-sm font-semibold text-stone-800">Selections</h4>
+            {scratchedHorses.length ? (
+              <p className="mb-2 text-xs text-stone-600">
+                Scratched (not bettable): {scratchedHorses.map((horse) => horse.name).join(', ')}
+              </p>
+            ) : null}
             {renderSelectionEditor()}
           </div>
 

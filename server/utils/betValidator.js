@@ -30,13 +30,14 @@ const normalizeHorseIds = (values) => {
 
 const unique = (values) => [...new Set(values)];
 
-const ensureAllowedHorseIds = (horseIds, allowedHorseIds) => {
+const findUnavailableHorseIds = (horseIds, allowedHorseIds) => {
+  const unavailable = [];
   for (const horseId of horseIds) {
     if (!allowedHorseIds.has(horseId)) {
-      return false;
+      unavailable.push(horseId);
     }
   }
-  return true;
+  return unavailable;
 };
 
 const permutations = (pool, length) => {
@@ -270,8 +271,11 @@ export const validateAndExpandBet = ({ bet_type, bet_modifier, base_amount, sele
       throw new Error('Ticket cannot include the same horse twice in one combination.');
     }
 
-    if (!ensureAllowedHorseIds(combo, allowedHorseIds)) {
-      throw new Error('Ticket contains horse(s) not available in this race.');
+    const unavailableHorseIds = findUnavailableHorseIds(combo, allowedHorseIds);
+    if (unavailableHorseIds.length) {
+      throw new Error(
+        `Ticket contains horse(s) not available in this race: ${unavailableHorseIds.join(', ')}.`
+      );
     }
   }
 
