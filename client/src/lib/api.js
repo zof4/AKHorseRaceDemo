@@ -1,7 +1,12 @@
 const toJson = async (response) => {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.error || `Request failed (${response.status})`);
+    const errorText = typeof body.error === 'string' ? body.error.trim() : '';
+    const detailText = typeof body.detail === 'string' ? body.detail.trim() : '';
+    if (errorText && detailText) {
+      throw new Error(`${errorText}: ${detailText}`);
+    }
+    throw new Error(errorText || `Request failed (${response.status})`);
   }
   return body;
 };

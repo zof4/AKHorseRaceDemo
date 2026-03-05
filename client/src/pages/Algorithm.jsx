@@ -9,6 +9,7 @@ const asScore = (value) => Number(value || 0).toFixed(1);
 const asPoints = (value) => Number(value || 0).toFixed(3);
 const pad = (value) => String(value).padStart(2, '0');
 const normalizeHorseName = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const normalizeText = (value) => String(value || '').trim().toLowerCase();
 const formatTimestamp = (value) => {
   if (!value) {
     return 'Not yet';
@@ -18,6 +19,28 @@ const formatTimestamp = (value) => {
     return 'Not yet';
   }
   return date.toLocaleString();
+};
+
+const formatTimeAgo = (value, nowMs) => {
+  if (!value) {
+    return 'Not yet';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'Not yet';
+  }
+
+  const seconds = Math.max(0, Math.floor((nowMs - date.getTime()) / 1000));
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
 };
 
 const METRIC_LABELS = {
@@ -131,8 +154,15 @@ export default function Algorithm() {
   const [error, setError] = useState('');
   const [status, setStatus] = useState('Waiting for first refresh.');
   const [lastLiveUpdateAt, setLastLiveUpdateAt] = useState(null);
+  const [lastRefreshAttemptAt, setLastRefreshAttemptAt] = useState(null);
+  const [lastRefreshSuccessAt, setLastRefreshSuccessAt] = useState(null);
+  const [lastRefreshSummary, setLastRefreshSummary] = useState(null);
+  const [nextAutoRefreshAt, setNextAutoRefreshAt] = useState(null);
+  const [nowMs, setNowMs] = useState(Date.now());
   const [selectedHorseName, setSelectedHorseName] = useState('');
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [selectedJockeyName, setSelectedJockeyName] = useState('');
+  const [jockeyInspectorOpen, setJockeyInspectorOpen] = useState(false);
   const [betModalOpen, setBetModalOpen] = useState(false);
   const [betDraft, setBetDraft] = useState(null);
   const [presetHistoryByExternalRaceId, setPresetHistoryByExternalRaceId] = useState({});
@@ -162,6 +192,11 @@ export default function Algorithm() {
     () => filteredRaces.find((entry) => entry.id === selectedRaceId) ?? filteredRaces[0] ?? null,
     [filteredRaces, selectedRaceId]
   );
+
+  const secondsUntilNextRefresh =
+    autoRefresh && nextAutoRefreshAt
+      ? Math.max(0, Math.ceil((nextAutoRefreshAt - nowMs) / 1000))
+      : null;
 
   const rankedWithPosts = useMemo(() => {
     if (!race || !analysis?.ranked) {
@@ -252,6 +287,51 @@ export default function Algorithm() {
       }))
       .sort((left, right) => right.avgModelProbability - left.avgModelProbability);
   }, [race, analysis]);
+
+  const selectedJockey = useMemo(() => {
+    if (!jockeyAnalysis.length) {
+      return null;
+    }
+
+    return (
+      jockeyAnalysis.find((row) => normalizeText(row.jockey) === normalizeText(selectedJockeyName)) ??
+      jockeyAnalysis[0]
+    );
+  }, [jockeyAnalysis, selectedJockeyName]);
+
+  const selectedJockeyRides = useMemo(() => {
+    if (!race || !analysis?.ranked || !selectedJockey) {
+      return [];
+    }
+
+    const runnerByHorseName = new Map(
+      analysis.ranked.map((runner) => [normalizeHorseName(runner.name), runner])
+    );
+
+    return (race.horses || [])
+      .filter((horse) => !Number(horse.scratched))
+      .filter((horse) => normalizeText(horse.jockey || 'Unknown Jockey') === normalizeText(selectedJockey.jockey))
+      .map((horse) => {
+        const runner = runnerByHorseName.get(normalizeHorseName(horse.name));
+        if (!runner) {
+          return null;
+        }
+        return {
+          horseId: horse.id,
+          horseName: horse.name,
+          postPosition: horse.post_position || '-',
+          odds: runner.odds || horse.morning_line_odds || '-',
+          score: runner.score,
+          modelProbability: runner.modelProbability,
+          marketProbability: runner.marketProbability,
+          valueEdge: runner.valueEdge,
+          fairOdds: runner.fairOdds?.text || 'N/A',
+          marketFairOdds: runner.marketFairOdds?.text || 'N/A'
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => Number(right.score || 0) - Number(left.score || 0));
+  }, [race, analysis, selectedJockey]);
 
   const selectedContributionRows = useMemo(() => {
     if (!selectedRunner?.scoreBreakdown?.base?.components) {
@@ -416,11 +496,25 @@ export default function Algorithm() {
   }, [rankedWithPosts, selectedHorseName]);
 
   useEffect(() => {
+    if (!jockeyAnalysis.length) {
+      setSelectedJockeyName('');
+      return;
+    }
+
+    if (!selectedJockeyName || !jockeyAnalysis.some((row) => normalizeText(row.jockey) === normalizeText(selectedJockeyName))) {
+      setSelectedJockeyName(jockeyAnalysis[0].jockey);
+    }
+  }, [jockeyAnalysis, selectedJockeyName]);
+
+  useEffect(() => {
     if (!autoRefresh || !selectedRace) {
+      setNextAutoRefreshAt(null);
       return undefined;
     }
 
+    setNextAutoRefreshAt(Date.now() + 15000);
     const timer = setInterval(() => {
+      setNextAutoRefreshAt(Date.now() + 15000);
       refreshMarket();
     }, 15000);
 
@@ -428,7 +522,12 @@ export default function Algorithm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, selectedRace?.id, bankroll]);
 
-  const modalOpen = inspectorOpen || betModalOpen;
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const modalOpen = inspectorOpen || jockeyInspectorOpen || betModalOpen;
 
   useEffect(() => {
     if (!modalOpen) {
@@ -481,13 +580,17 @@ export default function Algorithm() {
         }
         if (inspectorOpen) {
           setInspectorOpen(false);
+          return;
+        }
+        if (jockeyInspectorOpen) {
+          setJockeyInspectorOpen(false);
         }
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [modalOpen, betModalOpen, inspectorOpen]);
+  }, [modalOpen, betModalOpen, inspectorOpen, jockeyInspectorOpen]);
 
   useEffect(() => {
     if (!race?.id) {
@@ -518,6 +621,10 @@ export default function Algorithm() {
       return;
     }
 
+    setLastRefreshAttemptAt(new Date().toISOString());
+    if (autoRefresh) {
+      setNextAutoRefreshAt(Date.now() + 15000);
+    }
     setRefreshingMarket(true);
     setError('');
     setStatus('Refreshing live odds and BRISNET signals...');
@@ -529,6 +636,13 @@ export default function Algorithm() {
       setBrisnetIntel(payload.market?.brisnet ?? null);
       setScratchesIntel(payload.market?.scratches ?? null);
       setLastLiveUpdateAt(payload.fetchedAt || new Date().toISOString());
+      setLastRefreshSuccessAt(payload.fetchedAt || new Date().toISOString());
+      setLastRefreshSummary({
+        odds: Number(payload.updated?.odds || 0),
+        signals: Number(payload.updated?.signals || 0),
+        scratches: Number(payload.updated?.scratches || 0),
+        warnings: Array.isArray(payload.warnings) ? payload.warnings.length : 0
+      });
       const warningText =
         Array.isArray(payload.warnings) && payload.warnings.length
           ? ` Warnings: ${payload.warnings.map((warning) => `${warning.provider}: ${warning.message}`).join(' | ')}`
@@ -555,6 +669,10 @@ export default function Algorithm() {
     });
     setBrisnetIntel(null);
     setScratchesIntel(null);
+    setLastLiveUpdateAt(null);
+    setLastRefreshAttemptAt(null);
+    setLastRefreshSuccessAt(null);
+    setLastRefreshSummary(null);
   };
 
   const onRecalculate = async () => {
@@ -574,6 +692,11 @@ export default function Algorithm() {
   const openInspectorForHorse = (horseName) => {
     setSelectedHorseName(horseName);
     setInspectorOpen(true);
+  };
+
+  const openInspectorForJockey = (jockeyName) => {
+    setSelectedJockeyName(jockeyName);
+    setJockeyInspectorOpen(true);
   };
 
   const openBetModal = (draft) => {
@@ -610,6 +733,12 @@ export default function Algorithm() {
       suggestedTicket: `${selectedRunner.name} to Win`,
       focusHorseName: selectedRunner.name
     });
+  };
+
+  const openHorseInspectorFromJockey = (horseName) => {
+    setJockeyInspectorOpen(false);
+    setSelectedHorseName(horseName);
+    setInspectorOpen(true);
   };
 
   const inspectorModal =
@@ -801,6 +930,112 @@ export default function Algorithm() {
         )
       : null;
 
+  const jockeyInspectorModal =
+    jockeyInspectorOpen && selectedJockey
+      ? createPortal(
+          <div
+            className="fixed inset-0 z-[2050] px-3 py-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:py-6"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Jockey inspector for ${selectedJockey.jockey}`}
+          >
+            <button
+              type="button"
+              className="absolute inset-0 bg-stone-950/55"
+              aria-label="Close jockey inspector"
+              onClick={() => setJockeyInspectorOpen(false)}
+            />
+
+            <section
+              className="relative mx-auto flex h-[min(92dvh,920px)] w-full max-w-4xl flex-col overflow-hidden rounded-[24px] border border-[#d9c8b1] bg-[var(--bg-surface)] shadow-[0_20px_65px_rgba(0,0,0,0.45)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="flex items-start justify-between gap-3 border-b border-[#e4d7c6] bg-[var(--bg-surface)] px-4 py-3 md:px-5">
+                <div>
+                  <p className="kicker">Jockey Inspector</p>
+                  <h3 className="text-base font-semibold">{selectedJockey.jockey}</h3>
+                  <p className="text-xs text-stone-600">
+                    Ride-by-ride model impact for this race card. Tap a horse to open the horse inspector.
+                  </p>
+                </div>
+                <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => setJockeyInspectorOpen(false)}>
+                  Close
+                </button>
+              </header>
+
+              <div
+                className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-3 pb-6 md:px-5 [touch-action:pan-y]"
+                style={{ WebkitOverflowScrolling: 'touch' }}
+              >
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="tile">
+                    <p className="tile-title">Active Rides</p>
+                    <p className="tile-value text-base">{selectedJockey.rides}</p>
+                  </div>
+                  <div className="tile">
+                    <p className="tile-title">Avg Model Win %</p>
+                    <p className="tile-value text-base">{asPercent(selectedJockey.avgModelProbability)}</p>
+                  </div>
+                  <div className="tile">
+                    <p className="tile-title">Avg Edge</p>
+                    <p className={`tile-value text-base ${Number(selectedJockey.avgEdge) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {asPercent(selectedJockey.avgEdge)}
+                    </p>
+                  </div>
+                  <div className="tile">
+                    <p className="tile-title">Top Mount</p>
+                    <p className="tile-value text-sm">{selectedJockey.topHorse || 'N/A'}</p>
+                  </div>
+                </div>
+
+                <div className="mt-3 tile">
+                  <p className="text-sm font-semibold text-stone-900">Rides In This Race</p>
+                  {selectedJockeyRides.length ? (
+                    <div className="mt-2 grid gap-2">
+                      {selectedJockeyRides.map((ride) => (
+                        <div key={`${selectedJockey.jockey}-${ride.horseId}`} className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-semibold text-stone-900">
+                                {ride.horseName} (Post {ride.postPosition})
+                              </p>
+                              <p className="text-xs text-stone-600">
+                                Odds {ride.odds} • Score {asScore(ride.score)} • Fair {ride.fairOdds}
+                              </p>
+                              <p className="text-xs text-stone-500">Market fair {ride.marketFairOdds}</p>
+                            </div>
+                            <button
+                              className="btn-secondary px-3 py-1.5 text-xs"
+                              type="button"
+                              onClick={() => openHorseInspectorFromJockey(ride.horseName)}
+                            >
+                              Inspect Horse
+                            </button>
+                          </div>
+
+                          <div className="mt-2">
+                            <ProbabilityBars modelProbability={ride.modelProbability} marketProbability={ride.marketProbability} />
+                          </div>
+
+                          <p className="mt-2 text-xs">
+                            <span className={Number(ride.valueEdge) >= 0 ? 'text-emerald-700' : 'text-rose-700'}>
+                              Edge {asPercent(ride.valueEdge)}
+                            </span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-stone-600">No active rides found for this jockey in the selected race.</p>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>,
+          document.body
+        )
+      : null;
+
   if (loading) {
     return <section className="panel">Loading algorithm workspace...</section>;
   }
@@ -930,6 +1165,19 @@ export default function Algorithm() {
         <p className="mt-1 text-xs text-stone-500">
           Live refresh runs every 15 seconds when auto refresh is enabled. Last update: {formatTimestamp(lastLiveUpdateAt)}.
         </p>
+        <p className="mt-1 text-xs text-stone-500">
+          Last attempt: {formatTimestamp(lastRefreshAttemptAt)} ({formatTimeAgo(lastRefreshAttemptAt, nowMs)}). Last success:{' '}
+          {formatTimestamp(lastRefreshSuccessAt)} ({formatTimeAgo(lastRefreshSuccessAt, nowMs)}).
+        </p>
+        {autoRefresh && Number.isInteger(secondsUntilNextRefresh) ? (
+          <p className="mt-1 text-xs text-stone-500">Next auto refresh in ~{secondsUntilNextRefresh}s.</p>
+        ) : null}
+        {lastRefreshSummary ? (
+          <p className="mt-1 text-xs text-stone-500">
+            Last payload changes: odds {lastRefreshSummary.odds}, signals {lastRefreshSummary.signals}, scratches{' '}
+            {lastRefreshSummary.scratches}, warnings {lastRefreshSummary.warnings}.
+          </p>
+        ) : null}
         {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
       </article>
 
@@ -1001,7 +1249,12 @@ export default function Algorithm() {
         {jockeyAnalysis.length ? (
           <div className="mt-3 grid gap-2">
             {jockeyAnalysis.map((row) => (
-              <div key={row.jockey} className="tile">
+              <button
+                key={row.jockey}
+                type="button"
+                className="tile w-full text-left transition hover:bg-[#fbf4ec]"
+                onClick={() => openInspectorForJockey(row.jockey)}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="text-sm font-semibold text-stone-900">{row.jockey}</p>
@@ -1029,7 +1282,8 @@ export default function Algorithm() {
                     />
                   </div>
                 </div>
-              </div>
+                <p className="mt-2 text-xs font-semibold text-[var(--accent-main)]">Tap for jockey details</p>
+              </button>
             ))}
           </div>
         ) : (
@@ -1277,6 +1531,7 @@ export default function Algorithm() {
       </article>
       </section>
       {inspectorModal}
+      {jockeyInspectorModal}
       <BetPlacementModal
         isOpen={betModalOpen}
         race={race}
