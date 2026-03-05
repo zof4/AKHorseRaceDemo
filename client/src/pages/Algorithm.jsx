@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import BetPlacementModal from '../components/BetPlacementModal.jsx';
 
 const asPercent = (value) => `${(Number(value || 0) * 100).toFixed(1)}%`;
 const asScore = (value) => Number(value || 0).toFixed(1);
@@ -120,6 +121,8 @@ export default function Algorithm() {
   const [status, setStatus] = useState('Waiting for first refresh.');
   const [selectedHorseName, setSelectedHorseName] = useState('');
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [betModalOpen, setBetModalOpen] = useState(false);
+  const [betDraft, setBetDraft] = useState(null);
   const [presetHistoryByExternalRaceId, setPresetHistoryByExternalRaceId] = useState({});
   const marketPrimedRaceIdsRef = useRef(new Set());
 
@@ -354,8 +357,10 @@ export default function Algorithm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, selectedRace?.id, bankroll]);
 
+  const modalOpen = inspectorOpen || betModalOpen;
+
   useEffect(() => {
-    if (!inspectorOpen) {
+    if (!modalOpen) {
       return undefined;
     }
 
@@ -390,22 +395,28 @@ export default function Algorithm() {
       htmlStyle.overflow = previous.htmlOverflow;
       window.scrollTo({ top: scrollY, behavior: 'auto' });
     };
-  }, [inspectorOpen]);
+  }, [modalOpen]);
 
   useEffect(() => {
-    if (!inspectorOpen) {
+    if (!modalOpen) {
       return undefined;
     }
 
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
-        setInspectorOpen(false);
+        if (betModalOpen) {
+          setBetModalOpen(false);
+          return;
+        }
+        if (inspectorOpen) {
+          setInspectorOpen(false);
+        }
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [inspectorOpen]);
+  }, [modalOpen, betModalOpen, inspectorOpen]);
 
   useEffect(() => {
     if (!race?.id) {
@@ -445,10 +456,14 @@ export default function Algorithm() {
       await loadRaceDetail(selectedRace.id);
       setAnalysis(payload.analysis);
       setBrisnetIntel(payload.market?.brisnet ?? null);
+      const warningText =
+        Array.isArray(payload.warnings) && payload.warnings.length
+          ? ` Warnings: ${payload.warnings.map((warning) => `${warning.provider}: ${warning.message}`).join(' | ')}`
+          : '';
       setStatus(
         `Market refreshed: odds ${payload.updated.odds}, signals ${payload.updated.signals} at ${new Date(
           payload.fetchedAt
-        ).toLocaleTimeString()}.`
+        ).toLocaleTimeString()}.${warningText}`
       );
     } catch (err) {
       setError(err.message);
@@ -487,6 +502,42 @@ export default function Algorithm() {
     setInspectorOpen(true);
   };
 
+  const openBetModal = (draft) => {
+    setBetDraft(draft);
+    setBetModalOpen(true);
+  };
+
+  const openBetModalFromTopBet = (bet) => {
+    openBetModal({
+      label: `Top Bet #${bet.rank}: ${bet.type}`,
+      suggestedType: bet.type,
+      suggestedTicket: bet.ticket,
+      suggestedStake: bet.stake
+    });
+  };
+
+  const openBetModalFromTierSuggestion = (entry) => {
+    openBetModal({
+      label: `${entry.tier} suggestion`,
+      suggestedType: entry.tier,
+      suggestedTicket: `${entry.horse.name} (${entry.strategy})`,
+      focusHorseName: entry.horse.name
+    });
+  };
+
+  const openBetModalFromHorseInspector = () => {
+    if (!selectedRunner) {
+      return;
+    }
+    setInspectorOpen(false);
+    openBetModal({
+      label: `Horse Inspector: ${selectedRunner.name}`,
+      suggestedType: 'Horse Focus',
+      suggestedTicket: `${selectedRunner.name} to Win`,
+      focusHorseName: selectedRunner.name
+    });
+  };
+
   const inspectorModal =
     inspectorOpen && selectedRunner
       ? createPortal(
@@ -513,9 +564,14 @@ export default function Algorithm() {
                   <h3 className="text-base font-semibold">{selectedRunner.name}</h3>
                   <p className="text-xs text-stone-600">Full model math, BRISNET effect, and history context.</p>
                 </div>
-                <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => setInspectorOpen(false)}>
-                  Close
-                </button>
+                <div className="flex gap-2">
+                  <button className="btn-primary px-3 py-1.5 text-xs" type="button" onClick={openBetModalFromHorseInspector}>
+                    Add To Bet Slip
+                  </button>
+                  <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => setInspectorOpen(false)}>
+                    Close
+                  </button>
+                </div>
               </header>
 
               <div
@@ -853,21 +909,23 @@ export default function Algorithm() {
           <h3 className="text-base font-semibold">Top Five Bets</h3>
           <ul className="mt-3 grid gap-2 text-sm">
             {(analysis?.topBets || []).map((bet) => (
-              <li key={`${bet.rank}-${bet.ticket}`} className="tile">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="font-semibold">
-                    #{bet.rank} {bet.type}
-                  </p>
-                  <span
-                    className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
-                      riskToneClasses[bet.risk] || 'bg-stone-100 text-stone-700'
-                    }`}
-                  >
-                    {bet.risk}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-stone-700">{bet.ticket}</p>
-                <p className="mt-1 text-xs text-stone-500">Stake: {bet.stake}</p>
+              <li key={`${bet.rank}-${bet.ticket}`}>
+                <button type="button" className="tile w-full text-left transition hover:bg-[#fbf4ec]" onClick={() => openBetModalFromTopBet(bet)}>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-semibold">
+                      #{bet.rank} {bet.type}
+                    </p>
+                    <span
+                      className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                        riskToneClasses[bet.risk] || 'bg-stone-100 text-stone-700'
+                      }`}
+                    >
+                      {bet.risk}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-stone-700">{bet.ticket}</p>
+                  <p className="mt-1 text-xs text-stone-500">Stake: {bet.stake} • Tap to place</p>
+                </button>
               </li>
             ))}
           </ul>
@@ -919,9 +977,11 @@ export default function Algorithm() {
         <h3 className="text-base font-semibold">Three-Tier Suggestions</h3>
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           {(analysis?.tierSuggestions || []).map((entry) => (
-            <div
+            <button
               key={entry.tier}
-              className={`rounded-xl border p-3 text-sm ${tierToneClasses[entry.tier] || 'border-stone-200 bg-white'}`}
+              type="button"
+              className={`rounded-xl border p-3 text-left text-sm transition hover:bg-[#fbf4ec] ${tierToneClasses[entry.tier] || 'border-stone-200 bg-white'}`}
+              onClick={() => openBetModalFromTierSuggestion(entry)}
             >
               <p className="font-semibold">{entry.tier}</p>
               <p className="mt-1">
@@ -933,7 +993,8 @@ export default function Algorithm() {
                 <p>Edge: {asPercent(entry.horse.valueEdge)}</p>
               </div>
               <p className="mt-2 text-xs text-stone-700">{entry.strategy}</p>
-            </div>
+              <p className="mt-2 text-xs font-semibold text-[var(--accent-main)]">Tap to place</p>
+            </button>
           ))}
         </div>
       </article>
@@ -1001,6 +1062,13 @@ export default function Algorithm() {
               {brisnetIntel.diagnostics?.matching?.spotPlayMatchedFieldHorse ? 'yes' : 'no'} • Optix matched{' '}
               {Number(brisnetIntel.diagnostics?.matching?.optixMatchedFieldCount || 0)}
             </p>
+            {Array.isArray(brisnetIntel.diagnostics?.matching?.optixUrlRaceHints) &&
+            brisnetIntel.diagnostics.matching.optixUrlRaceHints.length ? (
+              <p>
+                Optix URL race hints: {brisnetIntel.diagnostics.matching.optixUrlRaceHints.join(', ')}{' '}
+                {brisnetIntel.diagnostics.matching.optixUrlLooksMismatched ? '(mismatch with selected race)' : ''}
+              </p>
+            ) : null}
             {Array.isArray(brisnetIntel.diagnostics?.matching?.unmatchedOptixSelections) &&
             brisnetIntel.diagnostics.matching.unmatchedOptixSelections.length ? (
               <p>
@@ -1013,10 +1081,16 @@ export default function Algorithm() {
                 Spot Plays: {brisnetIntel.diagnostics?.requests?.spotPlays?.ok ? 'ok' : 'not ok'} (
                 {brisnetIntel.diagnostics?.requests?.spotPlays?.status ?? 'n/a'})
               </p>
+              {brisnetIntel.diagnostics?.requests?.spotPlays?.preview ? (
+                <p>Spot preview: {brisnetIntel.diagnostics.requests.spotPlays.preview}</p>
+              ) : null}
               <p>
                 Optix: {brisnetIntel.diagnostics?.requests?.optix?.ok ? 'ok' : 'not ok'} (
                 {brisnetIntel.diagnostics?.requests?.optix?.status ?? 'n/a'})
               </p>
+              {brisnetIntel.diagnostics?.requests?.optix?.preview ? (
+                <p>Optix preview: {brisnetIntel.diagnostics.requests.optix.preview}</p>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -1048,6 +1122,15 @@ export default function Algorithm() {
       </article>
       </section>
       {inspectorModal}
+      <BetPlacementModal
+        isOpen={betModalOpen}
+        race={race}
+        draft={betDraft}
+        onClose={() => setBetModalOpen(false)}
+        onBetPlaced={(result) => {
+          setStatus(`Bet placed from algorithm modal. New balance: $${Number(result.user_balance || 0).toFixed(2)}.`);
+        }}
+      />
     </>
   );
 }

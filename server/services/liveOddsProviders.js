@@ -26,6 +26,15 @@ const stripHtml = (html) =>
     )
   );
 
+const summarizeHtmlPreview = async (response) => {
+  try {
+    const raw = await response.text();
+    return stripHtml(raw).slice(0, 220);
+  } catch {
+    return '';
+  }
+};
+
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const normalizeOdds = (odds) => odds.replace(/\s+/g, '');
@@ -33,6 +42,33 @@ const normalizeHorseName = (name) =>
   String(name ?? '')
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '');
+
+const parseRaceHintsFromUrl = (value) => {
+  const url = String(value ?? '');
+  if (!url) {
+    return [];
+  }
+
+  const match = url.match(/race(?:s)?-([0-9-]+)/i);
+  if (!match) {
+    return [];
+  }
+
+  return [...new Set(match[1].split('-').map((entry) => Number(entry)).filter((entry) => Number.isInteger(entry) && entry > 0))];
+};
+
+const buildTrackNeedles = (trackName) => {
+  const value = String(trackName ?? '').trim();
+  if (!value) {
+    return [];
+  }
+
+  const compact = value.replace(/\s+/g, ' ').trim();
+  const withoutPark = compact.replace(/\bPark\b/gi, '').replace(/\s+/g, ' ').trim();
+  const firstToken = compact.split(/\s+/)[0] ?? '';
+
+  return [...new Set([compact, withoutPark, firstToken].filter(Boolean).map((entry) => entry.toLowerCase()))];
+};
 
 export const buildBettingNewsRaceUrl = (raceConfig) => {
   const { trackSlug, year, month, day, raceNumber } = raceConfig;
@@ -74,7 +110,9 @@ export const fetchBettingNewsOdds = async (raceConfig, horseNames) => {
   const response = await fetch(url, { headers: DEFAULT_HEADERS });
 
   if (!response.ok) {
-    throw new Error(`BettingNews request failed with status ${response.status}`);
+    const preview = await summarizeHtmlPreview(response);
+    const detail = preview ? ` (${preview})` : '';
+    throw new Error(`BettingNews request failed with status ${response.status}${detail}`);
   }
 
   const html = await response.text();
@@ -106,21 +144,23 @@ const stripHtmlToLines = (html) => {
 };
 
 const extractBrisnetSpotPlay = (lines, trackName, raceNumber) => {
-  const trackIndex = lines.findIndex((line) => line.toLowerCase().includes(trackName.toLowerCase()));
-  if (trackIndex < 0) {
-    return null;
-  }
+  const trackNeedles = buildTrackNeedles(trackName);
+  const trackIndex =
+    lines.findIndex((line) => trackNeedles.some((needle) => line.toLowerCase().includes(needle))) ?? -1;
+  const startIndex = trackIndex >= 0 ? trackIndex : 0;
 
-  for (let index = trackIndex; index < Math.min(lines.length, trackIndex + 70); index += 1) {
+  for (let index = startIndex; index < Math.min(lines.length, startIndex + 120); index += 1) {
     const line = lines[index];
     const raceMatch = line.match(/^Race\s+(\d+)/i);
     if (!raceMatch || Number(raceMatch[1]) !== Number(raceNumber)) {
       continue;
     }
 
-    for (let probe = index + 1; probe < Math.min(lines.length, index + 8); probe += 1) {
+    for (let probe = index + 1; probe < Math.min(lines.length, index + 12); probe += 1) {
       const candidate = lines[probe];
-      const candidateMatch = candidate.match(/^(.+?)\s+(\d+\s*-\s*\d+)$/);
+      const candidateMatch =
+        candidate.match(/^(.+?)\s+(\d+\s*(?:-|\/)\s*\d+)$/i) ||
+        candidate.match(/^(.+?)\s+\((\d+\s*(?:-|\/)\s*\d+)\)$/i);
       if (candidateMatch) {
         return {
           raceNumber: Number(raceMatch[1]),
@@ -150,9 +190,9 @@ const extractBrisnetOptixSelections = (lines, raceNumber) => {
       continue;
     }
 
-    const horseMatch = line.match(/#\d+\s+([A-Z][A-Z' -]+)/);
+    const horseMatch = line.match(/#\d+\s+([A-Za-z][A-Za-z' -]+)/);
     if (horseMatch) {
-      selections.push(horseMatch[1].trim());
+      selections.push(collapseWhitespace(horseMatch[1].trim()));
     }
   }
 
@@ -198,7 +238,9 @@ export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
       matching: {
         spotPlayMatchedFieldHorse: false,
         optixMatchedFieldCount: 0,
-        unmatchedOptixSelections: []
+        unmatchedOptixSelections: [],
+        optixUrlRaceHints: [],
+        optixUrlLooksMismatched: false
       }
     }
   };
@@ -210,6 +252,7 @@ export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
   const { spotPlaysUrl, optixUrl, trackName, raceNumber } = brisnetConfig;
   const normalizedRaceNumber = Number(raceNumber);
   const normalizedFieldHorseNames = new Set(cleanHorseNames.map((name) => normalizeHorseName(name)));
+  const optixUrlRaceHints = parseRaceHintsFromUrl(optixUrl);
 
   if (spotPlaysUrl) {
     try {
@@ -229,6 +272,8 @@ export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
           normalizedRaceNumber
         );
         result.sources.push(spotPlaysUrl);
+      } else {
+        result.diagnostics.requests.spotPlays.preview = await summarizeHtmlPreview(spotResponse);
       }
     } catch (error) {
       result.diagnostics.requests.spotPlays = {
@@ -254,6 +299,8 @@ export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
         const lines = stripHtmlToLines(optixHtml);
         result.optixSelections = extractBrisnetOptixSelections(lines, normalizedRaceNumber);
         result.sources.push(optixUrl);
+      } else {
+        result.diagnostics.requests.optix.preview = await summarizeHtmlPreview(optixResponse);
       }
     } catch (error) {
       result.diagnostics.requests.optix = {
@@ -276,7 +323,12 @@ export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
   result.diagnostics.matching = {
     spotPlayMatchedFieldHorse: normalizedSpotPlay ? normalizedFieldHorseNames.has(normalizedSpotPlay) : false,
     optixMatchedFieldCount: normalizedOptixSelections.filter((name) => normalizedFieldHorseNames.has(name)).length,
-    unmatchedOptixSelections
+    unmatchedOptixSelections,
+    optixUrlRaceHints,
+    optixUrlLooksMismatched:
+      optixUrlRaceHints.length > 0 && Number.isFinite(normalizedRaceNumber)
+        ? !optixUrlRaceHints.includes(normalizedRaceNumber)
+        : false
   };
 
   return result;

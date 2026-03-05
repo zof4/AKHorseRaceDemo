@@ -209,44 +209,79 @@ export const createAlgorithmRouter = () => {
     const brisnetConfig = jsonParseSafe(race.brisnet_config_json, null);
     const horses = listRaceHorsesStmt.all(raceId);
     const horseNames = horses.map((horse) => horse.name);
+    const hasLiveOddsConfig = raceConfigIsValid(raceConfig);
+    const hasBrisnetConfig = brisnetConfig && typeof brisnetConfig === 'object';
 
-    if (!raceConfigIsValid(raceConfig)) {
-      return res.status(400).json({ error: 'Race does not have a valid live race config.' });
+    if (!hasLiveOddsConfig && !hasBrisnetConfig) {
+      return res.status(400).json({ error: 'Race does not have valid market provider config.' });
     }
 
     const updated = {
       odds: 0,
       signals: 0
     };
+    const warnings = [];
 
     try {
-      const oddsPayload = await getLiveOdds(raceConfig, horseNames);
-      for (const [name, odds] of Object.entries(oddsPayload.oddsByHorse ?? {})) {
-        const result = updateHorseOddsStmt.run(String(odds), raceId, name);
-        updated.odds += result.changes;
+      let oddsPayload = null;
+      let brisnetPayload = null;
+
+      if (hasLiveOddsConfig) {
+        try {
+          oddsPayload = await getLiveOdds(raceConfig, horseNames);
+          for (const [name, odds] of Object.entries(oddsPayload.oddsByHorse ?? {})) {
+            const result = updateHorseOddsStmt.run(String(odds), raceId, name);
+            updated.odds += result.changes;
+          }
+        } catch (error) {
+          warnings.push({
+            provider: 'BettingNews',
+            message: error instanceof Error ? error.message : 'Unknown live-odds error'
+          });
+        }
+      } else {
+        warnings.push({
+          provider: 'BettingNews',
+          message: 'Skipped: race is missing a valid live-odds config.'
+        });
       }
 
-      let brisnetPayload = null;
-      if (brisnetConfig && typeof brisnetConfig === 'object') {
-        brisnetPayload = await getBrisnetSignals(brisnetConfig, horseNames);
-        for (const [name, signal] of Object.entries(brisnetPayload.signals ?? {})) {
-          const result = updateHorseSignalStmt.run(Number(signal), raceId, name);
-          updated.signals += result.changes;
+      if (hasBrisnetConfig) {
+        try {
+          brisnetPayload = await getBrisnetSignals(brisnetConfig, horseNames);
+          for (const [name, signal] of Object.entries(brisnetPayload.signals ?? {})) {
+            const result = updateHorseSignalStmt.run(Number(signal), raceId, name);
+            updated.signals += result.changes;
+          }
+        } catch (error) {
+          warnings.push({
+            provider: 'BRISNET',
+            message: error instanceof Error ? error.message : 'Unknown BRISNET error'
+          });
         }
+      } else {
+        warnings.push({
+          provider: 'BRISNET',
+          message: 'Skipped: race has no BRISNET config.'
+        });
       }
 
       const analysis = analyzeRaceById(raceId, Number(req.body?.bankroll));
       return res.json({
         raceId,
         updated,
+        warnings,
         analysis,
         fetchedAt: new Date().toISOString(),
         market: {
-          odds: {
-            provider: oddsPayload.provider,
-            url: oddsPayload.url,
-            fetchedAt: oddsPayload.fetchedAt
-          },
+          odds: oddsPayload
+            ? {
+                provider: oddsPayload.provider,
+                url: oddsPayload.url,
+                fetchedAt: oddsPayload.fetchedAt,
+                oddsByHorse: oddsPayload.oddsByHorse
+              }
+            : null,
           brisnet: brisnetPayload
             ? {
                 provider: brisnetPayload.provider,
@@ -260,8 +295,8 @@ export const createAlgorithmRouter = () => {
             : null
         },
         providers: {
-          odds: 'BettingNews',
-          brisnet: brisnetConfig ? 'BRISNET' : null
+          odds: hasLiveOddsConfig ? 'BettingNews' : null,
+          brisnet: hasBrisnetConfig ? 'BRISNET' : null
         }
       });
     } catch (error) {
