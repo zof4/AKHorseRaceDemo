@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
@@ -118,6 +119,7 @@ export default function Algorithm() {
   const [error, setError] = useState('');
   const [status, setStatus] = useState('Waiting for first refresh.');
   const [selectedHorseName, setSelectedHorseName] = useState('');
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [presetHistoryByExternalRaceId, setPresetHistoryByExternalRaceId] = useState({});
   const marketPrimedRaceIdsRef = useRef(new Set());
 
@@ -353,6 +355,59 @@ export default function Algorithm() {
   }, [autoRefresh, selectedRace?.id, bankroll]);
 
   useEffect(() => {
+    if (!inspectorOpen) {
+      return undefined;
+    }
+
+    const { body, documentElement } = document;
+    const bodyStyle = body.style;
+    const htmlStyle = documentElement.style;
+    const scrollY = window.scrollY;
+
+    const previous = {
+      bodyPosition: bodyStyle.position,
+      bodyTop: bodyStyle.top,
+      bodyWidth: bodyStyle.width,
+      bodyOverflow: bodyStyle.overflow,
+      htmlOverflow: htmlStyle.overflow
+    };
+
+    body.classList.add('modal-open');
+    documentElement.classList.add('modal-open');
+    bodyStyle.position = 'fixed';
+    bodyStyle.top = `-${scrollY}px`;
+    bodyStyle.width = '100%';
+    bodyStyle.overflow = 'hidden';
+    htmlStyle.overflow = 'hidden';
+
+    return () => {
+      body.classList.remove('modal-open');
+      documentElement.classList.remove('modal-open');
+      bodyStyle.position = previous.bodyPosition;
+      bodyStyle.top = previous.bodyTop;
+      bodyStyle.width = previous.bodyWidth;
+      bodyStyle.overflow = previous.bodyOverflow;
+      htmlStyle.overflow = previous.htmlOverflow;
+      window.scrollTo({ top: scrollY, behavior: 'auto' });
+    };
+  }, [inspectorOpen]);
+
+  useEffect(() => {
+    if (!inspectorOpen) {
+      return undefined;
+    }
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setInspectorOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [inspectorOpen]);
+
+  useEffect(() => {
     if (!race?.id) {
       return;
     }
@@ -427,6 +482,195 @@ export default function Algorithm() {
     }
   };
 
+  const openInspectorForHorse = (horseName) => {
+    setSelectedHorseName(horseName);
+    setInspectorOpen(true);
+  };
+
+  const inspectorModal =
+    inspectorOpen && selectedRunner
+      ? createPortal(
+          <div
+            className="fixed inset-0 z-[2000] px-3 py-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:py-6"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Horse inspector for ${selectedRunner.name}`}
+          >
+            <button
+              type="button"
+              className="absolute inset-0 bg-stone-950/55"
+              aria-label="Close horse inspector"
+              onClick={() => setInspectorOpen(false)}
+            />
+
+            <section
+              className="relative mx-auto flex h-[min(92dvh,920px)] w-full max-w-4xl flex-col overflow-hidden rounded-[24px] border border-[#d9c8b1] bg-[var(--bg-surface)] shadow-[0_20px_65px_rgba(0,0,0,0.45)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="flex items-start justify-between gap-3 border-b border-[#e4d7c6] bg-[var(--bg-surface)] px-4 py-3 md:px-5">
+                <div>
+                  <p className="kicker">Horse Inspector</p>
+                  <h3 className="text-base font-semibold">{selectedRunner.name}</h3>
+                  <p className="text-xs text-stone-600">Full model math, BRISNET effect, and history context.</p>
+                </div>
+                <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => setInspectorOpen(false)}>
+                  Close
+                </button>
+              </header>
+
+              <div
+                className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-3 pb-6 md:px-5 [touch-action:pan-y]"
+                style={{ WebkitOverflowScrolling: 'touch' }}
+              >
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="tile">
+                    <p className="tile-title">Model Win %</p>
+                    <p className="tile-value text-base">{asPercent(selectedRunner.modelProbability)}</p>
+                  </div>
+                  <div className="tile">
+                    <p className="tile-title">Market Win %</p>
+                    <p className="tile-value text-base">{asPercent(selectedRunner.marketProbability)}</p>
+                  </div>
+                  <div className="tile">
+                    <p className="tile-title">Model Fair Odds</p>
+                    <p className="tile-value text-base">{selectedRunner.fairOdds?.text || 'N/A'}</p>
+                  </div>
+                  <div className="tile">
+                    <p className="tile-title">Value Edge</p>
+                    <p
+                      className={`tile-value text-base ${Number(selectedRunner.valueEdge) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}
+                    >
+                      {asPercent(selectedRunner.valueEdge)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="tile">
+                    <p className="text-sm font-semibold text-stone-900">Score Contributions</p>
+                    <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                      {selectedContributionRows.map((component) => (
+                        <li key={component.key} className="flex items-center justify-between gap-2">
+                          <span>
+                            {METRIC_LABELS[component.key] || component.key}: {asScore(component.rating)} ×{' '}
+                            {asScore(component.weight)}
+                          </span>
+                          <strong>{asPoints(component.contribution)}</strong>
+                        </li>
+                      ))}
+                      <li className="mt-1 flex items-center justify-between gap-2 border-t border-stone-200 pt-1">
+                        <span>
+                          Volatility penalty ({asScore(selectedRunner.scoreBreakdown?.base?.volatilityRating)} ×{' '}
+                          {asScore(analysis?.modelMeta?.volatilityPenaltyWeight)})
+                        </span>
+                        <strong>-{asPoints(selectedRunner.scoreBreakdown?.base?.volatilityPenalty)}</strong>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="tile">
+                    <p className="text-sm font-semibold text-stone-900">Final Score Equation</p>
+                    <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                      <li className="flex items-center justify-between gap-2">
+                        <span>Base score</span>
+                        <strong>{asPoints(selectedRunner.scoreBreakdown?.base?.baseScore)}</strong>
+                      </li>
+                      <li className="flex items-center justify-between gap-2">
+                        <span>Value lift (edge × 100 × {asScore(analysis?.modelMeta?.valueEdgeLiftWeight)})</span>
+                        <strong>{asPoints(selectedRunner.scoreBreakdown?.valueLift)}</strong>
+                      </li>
+                      <li className="flex items-center justify-between gap-2">
+                        <span>
+                          Stability bonus ({asScore(selectedRunner.scoreBreakdown?.stability?.stabilityIndex)} ×{' '}
+                          {asScore(analysis?.modelMeta?.stabilityBonusWeight)})
+                        </span>
+                        <strong>{asPoints(selectedRunner.scoreBreakdown?.stabilityBonus)}</strong>
+                      </li>
+                      <li className="mt-1 flex items-center justify-between gap-2 border-t border-stone-200 pt-1">
+                        <span>Final score</span>
+                        <strong>{asPoints(selectedRunner.scoreBreakdown?.finalScore)}</strong>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="mt-3 tile">
+                  <p className="text-sm font-semibold text-stone-900">BRISNET Effect For This Horse</p>
+                  <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                    <li className="flex items-center justify-between gap-2">
+                      <span>BRISNET rating input</span>
+                      <strong>{asScore(selectedRunner.brisnetSignal)}</strong>
+                    </li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span>Weighted BRISNET contribution ({asScore(brisnetSignalContribution?.weight)})</span>
+                      <strong>{asPoints(brisnetSignalContribution?.contribution)}</strong>
+                    </li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span>Score with BRISNET</span>
+                      <strong>{asPoints(selectedRunnerImpact?.withBrisnet?.score ?? selectedRunner.score)}</strong>
+                    </li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span>Score without BRISNET (neutral signal=50)</span>
+                      <strong>{asPoints(selectedRunnerImpact?.withoutBrisnet?.score)}</strong>
+                    </li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span>Score delta from BRISNET</span>
+                      <strong
+                        className={`${Number(selectedRunnerImpact?.scoreDelta) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}
+                      >
+                        {asPoints(selectedRunnerImpact?.scoreDelta)}
+                      </strong>
+                    </li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span>Rank shift from BRISNET</span>
+                      <strong
+                        className={`${Number(selectedRunnerImpact?.rankDelta) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}
+                      >
+                        {Number(selectedRunnerImpact?.rankDelta) > 0 ? '+' : ''}
+                        {selectedRunnerImpact?.rankDelta ?? 0}
+                      </strong>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="tile">
+                    <p className="text-sm font-semibold text-stone-900">Historical Context</p>
+                    <p className="mt-2 text-xs text-stone-700">
+                      Narrative: {selectedPresetHorse?.history || 'No preset narrative available.'}
+                    </p>
+                    <p className="mt-2 text-xs text-stone-700">
+                      Recent form array:{' '}
+                      {Array.isArray(selectedRaceHorse?.recent_form) && selectedRaceHorse.recent_form.length
+                        ? selectedRaceHorse.recent_form.join(', ')
+                        : 'No stored recent form values.'}
+                    </p>
+                    <p className="mt-1 text-xs text-stone-700">
+                      Speed figures:{' '}
+                      {Array.isArray(selectedRaceHorse?.speed_figures) && selectedRaceHorse.speed_figures.length
+                        ? selectedRaceHorse.speed_figures.join(', ')
+                        : 'No stored speed figure history.'}
+                    </p>
+                  </div>
+
+                  <div className="tile">
+                    <p className="text-sm font-semibold text-stone-900">What Each Metric Means</p>
+                    <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                      {Object.entries(METRIC_MEANINGS).map(([key, meaning]) => (
+                        <li key={key}>
+                          <strong>{METRIC_LABELS[key] || key}:</strong> {meaning}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>,
+          document.body
+        )
+      : null;
+
   if (loading) {
     return <section className="panel">Loading algorithm workspace...</section>;
   }
@@ -441,7 +685,8 @@ export default function Algorithm() {
   }
 
   return (
-    <section className="grid gap-4">
+    <>
+      <section className="grid gap-4">
       <article className="panel">
         <p className="kicker">Model Control</p>
         <h2 className="page-title mt-1">Algorithm Systems</h2>
@@ -564,7 +809,7 @@ export default function Algorithm() {
             <span className={`status-chip status-${race.status}`}>{race.status}</span>
           </div>
 
-          <p className="mt-2 text-xs text-stone-500">Tap a horse to inspect full scoring breakdown.</p>
+          <p className="mt-2 text-xs text-stone-500">Tap a horse to open a full-screen inspector.</p>
           <div className="mt-3 grid gap-2">
             {rankedWithPosts.map((runner) => {
               const selected = normalizeHorseName(runner.name) === normalizeHorseName(selectedRunner?.name);
@@ -573,7 +818,7 @@ export default function Algorithm() {
                   key={runner.name}
                   type="button"
                   className={`tile text-left transition ${selected ? 'ring-2 ring-[var(--accent-main)]' : 'hover:bg-[#fbf4ec]'}`}
-                  onClick={() => setSelectedHorseName(runner.name)}
+                  onClick={() => openInspectorForHorse(runner.name)}
                 >
                   <div className="mb-2 flex items-start justify-between gap-2">
                     <div>
@@ -599,151 +844,6 @@ export default function Algorithm() {
                 </button>
               );
             })}
-          </div>
-        </article>
-      ) : null}
-
-      {selectedRunner ? (
-        <article className="panel">
-          <h3 className="text-base font-semibold">Horse Inspector: {selectedRunner.name}</h3>
-          <p className="mt-1 text-xs text-stone-600">
-            This panel shows exactly how the algorithm scored this horse and how that becomes assigned fair odds.
-          </p>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="tile">
-              <p className="tile-title">Model Win %</p>
-              <p className="tile-value text-base">{asPercent(selectedRunner.modelProbability)}</p>
-            </div>
-            <div className="tile">
-              <p className="tile-title">Market Win %</p>
-              <p className="tile-value text-base">{asPercent(selectedRunner.marketProbability)}</p>
-            </div>
-            <div className="tile">
-              <p className="tile-title">Model Fair Odds</p>
-              <p className="tile-value text-base">{selectedRunner.fairOdds?.text || 'N/A'}</p>
-            </div>
-            <div className="tile">
-              <p className="tile-title">Value Edge</p>
-              <p className={`tile-value text-base ${Number(selectedRunner.valueEdge) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                {asPercent(selectedRunner.valueEdge)}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">
-            <div className="tile">
-              <p className="text-sm font-semibold text-stone-900">Score Contributions</p>
-              <ul className="mt-2 grid gap-1 text-xs text-stone-700">
-                {selectedContributionRows.map((component) => (
-                  <li key={component.key} className="flex items-center justify-between gap-2">
-                    <span>
-                      {METRIC_LABELS[component.key] || component.key}: {asScore(component.rating)} × {asScore(component.weight)}
-                    </span>
-                    <strong>{asPoints(component.contribution)}</strong>
-                  </li>
-                ))}
-                <li className="mt-1 flex items-center justify-between gap-2 border-t border-stone-200 pt-1">
-                  <span>Volatility penalty ({asScore(selectedRunner.scoreBreakdown?.base?.volatilityRating)} × {asScore(analysis?.modelMeta?.volatilityPenaltyWeight)})</span>
-                  <strong>-{asPoints(selectedRunner.scoreBreakdown?.base?.volatilityPenalty)}</strong>
-                </li>
-              </ul>
-            </div>
-
-            <div className="tile">
-              <p className="text-sm font-semibold text-stone-900">Final Score Equation</p>
-              <ul className="mt-2 grid gap-1 text-xs text-stone-700">
-                <li className="flex items-center justify-between gap-2">
-                  <span>Base score</span>
-                  <strong>{asPoints(selectedRunner.scoreBreakdown?.base?.baseScore)}</strong>
-                </li>
-                <li className="flex items-center justify-between gap-2">
-                  <span>Value lift (edge × 100 × {asScore(analysis?.modelMeta?.valueEdgeLiftWeight)})</span>
-                  <strong>{asPoints(selectedRunner.scoreBreakdown?.valueLift)}</strong>
-                </li>
-                <li className="flex items-center justify-between gap-2">
-                  <span>Stability bonus ({asScore(selectedRunner.scoreBreakdown?.stability?.stabilityIndex)} × {asScore(analysis?.modelMeta?.stabilityBonusWeight)})</span>
-                  <strong>{asPoints(selectedRunner.scoreBreakdown?.stabilityBonus)}</strong>
-                </li>
-                <li className="mt-1 flex items-center justify-between gap-2 border-t border-stone-200 pt-1">
-                  <span>Final score</span>
-                  <strong>{asPoints(selectedRunner.scoreBreakdown?.finalScore)}</strong>
-                </li>
-              </ul>
-            </div>
-          </div>
-
-          <div className="mt-3 tile">
-            <p className="text-sm font-semibold text-stone-900">BRISNET Effect For This Horse</p>
-            <ul className="mt-2 grid gap-1 text-xs text-stone-700">
-              <li className="flex items-center justify-between gap-2">
-                <span>BRISNET rating input</span>
-                <strong>{asScore(selectedRunner.brisnetSignal)}</strong>
-              </li>
-              <li className="flex items-center justify-between gap-2">
-                <span>Weighted BRISNET contribution ({asScore(brisnetSignalContribution?.weight)})</span>
-                <strong>{asPoints(brisnetSignalContribution?.contribution)}</strong>
-              </li>
-              <li className="flex items-center justify-between gap-2">
-                <span>Score with BRISNET</span>
-                <strong>{asPoints(selectedRunnerImpact?.withBrisnet?.score ?? selectedRunner.score)}</strong>
-              </li>
-              <li className="flex items-center justify-between gap-2">
-                <span>Score without BRISNET (neutral signal=50)</span>
-                <strong>{asPoints(selectedRunnerImpact?.withoutBrisnet?.score)}</strong>
-              </li>
-              <li className="flex items-center justify-between gap-2">
-                <span>Score delta from BRISNET</span>
-                <strong
-                  className={`${
-                    Number(selectedRunnerImpact?.scoreDelta) >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                  }`}
-                >
-                  {asPoints(selectedRunnerImpact?.scoreDelta)}
-                </strong>
-              </li>
-              <li className="flex items-center justify-between gap-2">
-                <span>Rank shift from BRISNET</span>
-                <strong
-                  className={`${
-                    Number(selectedRunnerImpact?.rankDelta) >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                  }`}
-                >
-                  {Number(selectedRunnerImpact?.rankDelta) > 0 ? '+' : ''}
-                  {selectedRunnerImpact?.rankDelta ?? 0}
-                </strong>
-              </li>
-            </ul>
-          </div>
-
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">
-            <div className="tile">
-              <p className="text-sm font-semibold text-stone-900">Historical Context</p>
-              <p className="mt-2 text-xs text-stone-700">
-                Narrative: {selectedPresetHorse?.history || 'No preset narrative available.'}
-              </p>
-              <p className="mt-2 text-xs text-stone-700">
-                Recent form array: {Array.isArray(selectedRaceHorse?.recent_form) && selectedRaceHorse.recent_form.length
-                  ? selectedRaceHorse.recent_form.join(', ')
-                  : 'No stored recent form values.'}
-              </p>
-              <p className="mt-1 text-xs text-stone-700">
-                Speed figures: {Array.isArray(selectedRaceHorse?.speed_figures) && selectedRaceHorse.speed_figures.length
-                  ? selectedRaceHorse.speed_figures.join(', ')
-                  : 'No stored speed figure history.'}
-              </p>
-            </div>
-
-            <div className="tile">
-              <p className="text-sm font-semibold text-stone-900">What Each Metric Means</p>
-              <ul className="mt-2 grid gap-1 text-xs text-stone-700">
-                {Object.entries(METRIC_MEANINGS).map(([key, meaning]) => (
-                  <li key={key}>
-                    <strong>{METRIC_LABELS[key] || key}:</strong> {meaning}
-                  </li>
-                ))}
-              </ul>
-            </div>
           </div>
         </article>
       ) : null}
@@ -946,6 +1046,8 @@ export default function Algorithm() {
           ))}
         </ul>
       </article>
-    </section>
+      </section>
+      {inspectorModal}
+    </>
   );
 }

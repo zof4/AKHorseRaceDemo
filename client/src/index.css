@@ -27,6 +27,16 @@ body {
     var(--bg-main);
 }
 
+html.modal-open,
+body.modal-open {
+  overflow: hidden;
+  height: 100%;
+}
+
+body.modal-open .mobile-nav {
+  display: none;
+}
+
 .safe-bottom {
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
