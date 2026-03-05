@@ -1,6 +1,12 @@
 import { Router } from 'express';
 import db, { jsonParseSafe } from '../db/connection.js';
 import { validateCreateRaceInput } from '../utils/validators.js';
+import {
+  getDefaultPresetId,
+  getPresetById,
+  listRacePresets,
+  listTodayTomorrowPresets
+} from '../services/racePresets.js';
 
 const BET_TYPES = ['exacta', 'quinella', 'trifecta', 'superfecta', 'super_hi_5'];
 
@@ -17,6 +23,7 @@ const listRacesStmt = db.prepare(
       r.status,
       r.source,
       r.takeout_pct,
+      r.external_id,
       r.created_at,
       COUNT(h.id) AS horse_count
     FROM races r
@@ -47,9 +54,19 @@ const getRaceStmt = db.prepare(
       status,
       source,
       takeout_pct,
+      external_id,
+      race_config_json,
+      brisnet_config_json,
+      sources_json,
       created_at
    FROM races
    WHERE id = ?`
+);
+
+const getRaceByExternalIdStmt = db.prepare(
+  `SELECT id
+   FROM races
+   WHERE external_id = ?`
 );
 
 const listHorsesStmt = db.prepare(
@@ -69,6 +86,16 @@ const listHorsesStmt = db.prepare(
       jockey_win_pct,
       trainer_win_pct,
       class_rating,
+      speed_rating,
+      form_rating,
+      pace_fit_rating,
+      distance_fit_rating,
+      connections_rating,
+      consistency_rating,
+      volatility_rating,
+      late_kick_rating,
+      improving_trend_rating,
+      brisnet_signal,
       scratched,
       created_at
    FROM horses
@@ -87,8 +114,31 @@ const insertRaceStmt = db.prepare(
       post_time,
       status,
       source,
-      takeout_pct
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      takeout_pct,
+      external_id,
+      race_config_json,
+      brisnet_config_json,
+      sources_json
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+);
+
+const updateRaceByIdStmt = db.prepare(
+  `UPDATE races
+   SET
+      name = ?,
+      track = ?,
+      race_number = ?,
+      distance = ?,
+      surface = ?,
+      class = ?,
+      post_time = ?,
+      status = ?,
+      source = ?,
+      takeout_pct = ?,
+      race_config_json = ?,
+      brisnet_config_json = ?,
+      sources_json = ?
+   WHERE id = ?`
 );
 
 const insertHorseStmt = db.prepare(
@@ -107,9 +157,21 @@ const insertHorseStmt = db.prepare(
       jockey_win_pct,
       trainer_win_pct,
       class_rating,
+      speed_rating,
+      form_rating,
+      pace_fit_rating,
+      distance_fit_rating,
+      connections_rating,
+      consistency_rating,
+      volatility_rating,
+      late_kick_rating,
+      improving_trend_rating,
+      brisnet_signal,
       scratched
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
+
+const deleteHorsesForRaceStmt = db.prepare('DELETE FROM horses WHERE race_id = ?');
 
 const insertPoolStmt = db.prepare(
   `INSERT OR IGNORE INTO pools (race_id, bet_type, total_amount)
@@ -134,29 +196,65 @@ const hydrateRace = (raceId) => {
     speed_figures: jsonParseSafe(horse.speed_figures, [])
   }));
 
-  return { ...race, horses };
+  return {
+    ...race,
+    race_config: jsonParseSafe(race.race_config_json, null),
+    brisnet_config: jsonParseSafe(race.brisnet_config_json, null),
+    sources: jsonParseSafe(race.sources_json, []),
+    horses
+  };
 };
 
-const createRaceTx = db.transaction((payload) => {
+const createOrUpdateRaceTx = db.transaction((payload) => {
   const takeout =
     typeof payload.takeout_pct === 'number' && payload.takeout_pct >= 0 && payload.takeout_pct <= 1
       ? payload.takeout_pct
       : Number(process.env.DEFAULT_TAKEOUT_PCT ?? 0.22);
 
-  const raceResult = insertRaceStmt.run(
-    payload.name,
-    payload.track,
-    payload.race_number,
-    payload.distance,
-    payload.surface,
-    payload.class,
-    payload.post_time,
-    payload.status,
-    payload.source,
-    takeout
-  );
+  let raceId;
+  if (payload.external_id) {
+    const existing = getRaceByExternalIdStmt.get(payload.external_id);
+    if (existing) {
+      raceId = Number(existing.id);
+      updateRaceByIdStmt.run(
+        payload.name,
+        payload.track,
+        payload.race_number,
+        payload.distance,
+        payload.surface,
+        payload.class,
+        payload.post_time,
+        payload.status,
+        payload.source,
+        takeout,
+        payload.race_config_json ?? null,
+        payload.brisnet_config_json ?? null,
+        payload.sources_json ?? null,
+        raceId
+      );
+      deleteHorsesForRaceStmt.run(raceId);
+    }
+  }
 
-  const raceId = Number(raceResult.lastInsertRowid);
+  if (!raceId) {
+    const raceResult = insertRaceStmt.run(
+      payload.name,
+      payload.track,
+      payload.race_number,
+      payload.distance,
+      payload.surface,
+      payload.class,
+      payload.post_time,
+      payload.status,
+      payload.source,
+      takeout,
+      payload.external_id ?? null,
+      payload.race_config_json ?? null,
+      payload.brisnet_config_json ?? null,
+      payload.sources_json ?? null
+    );
+    raceId = Number(raceResult.lastInsertRowid);
+  }
 
   for (const horse of payload.horses) {
     insertHorseStmt.run(
@@ -174,6 +272,16 @@ const createRaceTx = db.transaction((payload) => {
       horse.jockey_win_pct,
       horse.trainer_win_pct,
       horse.class_rating,
+      horse.speed_rating,
+      horse.form_rating,
+      horse.pace_fit_rating,
+      horse.distance_fit_rating,
+      horse.connections_rating,
+      horse.consistency_rating,
+      horse.volatility_rating,
+      horse.late_kick_rating,
+      horse.improving_trend_rating,
+      horse.brisnet_signal,
       horse.scratched
     );
   }
@@ -185,8 +293,93 @@ const createRaceTx = db.transaction((payload) => {
   return raceId;
 });
 
+const mapPresetToRacePayload = (preset) => ({
+  name: preset.meta.name,
+  track: 'Oaklawn Park',
+  race_number: Number(preset.raceConfig.raceNumber),
+  distance: preset.meta.distance,
+  surface: 'Dirt',
+  class: preset.meta.class,
+  post_time: `${preset.raceConfig.year}-${String(preset.raceConfig.month).padStart(2, '0')}-${String(
+    preset.raceConfig.day
+  ).padStart(2, '0')}T00:00:00`,
+  status: 'upcoming',
+  source: 'api',
+  takeout_pct: Number(process.env.DEFAULT_TAKEOUT_PCT ?? 0.22),
+  external_id: preset.id,
+  race_config_json: JSON.stringify(preset.raceConfig ?? {}),
+  brisnet_config_json: JSON.stringify(preset.brisnetConfig ?? {}),
+  sources_json: JSON.stringify(preset.sources ?? []),
+  horses: preset.horses.map((horse, index) => ({
+    name: horse.name,
+    post_position: index + 1,
+    jockey: null,
+    trainer: null,
+    morning_line_odds: horse.odds,
+    weight: null,
+    age: null,
+    sex: null,
+    recent_form: JSON.stringify([]),
+    speed_figures: JSON.stringify([horse.speed]),
+    jockey_win_pct: null,
+    trainer_win_pct: null,
+    class_rating: horse.class,
+    speed_rating: horse.speed,
+    form_rating: horse.form,
+    pace_fit_rating: horse.paceFit,
+    distance_fit_rating: horse.distanceFit,
+    connections_rating: horse.connections,
+    consistency_rating: horse.consistency,
+    volatility_rating: horse.volatility,
+    late_kick_rating: horse.lateKick,
+    improving_trend_rating: horse.improvingTrend,
+    brisnet_signal: horse.brisnetSignal ?? 50,
+    scratched: 0
+  }))
+});
+
 export const createRacesRouter = (io) => {
   const router = Router();
+
+  router.get('/presets', (_req, res) => {
+    const presets = listRacePresets().map((preset) => ({
+      id: preset.id,
+      label: preset.label,
+      meta: preset.meta,
+      raceConfig: preset.raceConfig,
+      brisnetConfig: preset.brisnetConfig,
+      sourceCount: Array.isArray(preset.sources) ? preset.sources.length : 0,
+      horseCount: Array.isArray(preset.horses) ? preset.horses.length : 0,
+      isDefault: preset.id === getDefaultPresetId()
+    }));
+
+    res.json({ presets });
+  });
+
+  router.post('/import/presets', (req, res) => {
+    const presetIds = Array.isArray(req.body?.presetIds)
+      ? req.body.presetIds.map((entry) => String(entry)).filter(Boolean)
+      : null;
+
+    const selected = presetIds?.length
+      ? presetIds.map((presetId) => getPresetById(presetId)).filter(Boolean)
+      : listTodayTomorrowPresets();
+
+    if (!selected.length) {
+      return res.status(400).json({ error: 'No matching presets to import.' });
+    }
+
+    const imported = [];
+    for (const preset of selected) {
+      const payload = mapPresetToRacePayload(preset);
+      const raceId = createOrUpdateRaceTx(payload);
+      const race = hydrateRace(raceId);
+      io.emit('race_created', { race });
+      imported.push({ presetId: preset.id, raceId, raceName: race?.name ?? payload.name });
+    }
+
+    return res.json({ imported });
+  });
 
   router.get('/', (_req, res) => {
     const races = listRacesStmt.all();
@@ -213,7 +406,7 @@ export const createRacesRouter = (io) => {
       return res.status(400).json({ error: parsed.error });
     }
 
-    const raceId = createRaceTx(parsed.value);
+    const raceId = createOrUpdateRaceTx(parsed.value);
     const race = hydrateRace(raceId);
     io.emit('race_created', { race });
 

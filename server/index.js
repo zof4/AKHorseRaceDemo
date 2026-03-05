@@ -7,6 +7,7 @@ import db from './db/connection.js';
 import { createUsersRouter } from './routes/users.js';
 import { createRacesRouter } from './routes/races.js';
 import { createAlgorithmRouter } from './routes/algorithm.js';
+import { createBetsRouter } from './routes/bets.js';
 import { registerSocketHandlers } from './socket/handler.js';
 
 const app = express();
@@ -37,6 +38,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/users', createUsersRouter(io));
 app.use('/api/races', createRacesRouter(io));
 app.use('/api/algorithm', createAlgorithmRouter());
+app.use('/api', createBetsRouter(io));
 
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });

@@ -5,7 +5,7 @@ import {
   identifyUndercoverWinner,
   rankRace
 } from "./algorithmEngine.js";
-import { defaultHorses, liveRaceConfig, raceMeta, raceSources } from "./data.js";
+import { defaultRacePresetId, racePresets } from "./data.js";
 
 const NUMERIC_FIELDS = [
   "speed",
@@ -17,7 +17,8 @@ const NUMERIC_FIELDS = [
   "consistency",
   "volatility",
   "lateKick",
-  "improvingTrend"
+  "improvingTrend",
+  "brisnetSignal"
 ];
 
 const tableBody = document.querySelector("#horse-table-body");
@@ -33,11 +34,16 @@ const addHorseButton = document.querySelector("#add-horse-btn");
 const liveOddsButton = document.querySelector("#live-odds-btn");
 const autoRefreshToggle = document.querySelector("#auto-refresh-toggle");
 const liveOddsStatus = document.querySelector("#live-odds-status");
+const brisnetStatus = document.querySelector("#brisnet-status");
+const brisnetIntelRoot = document.querySelector("#brisnet-intel");
+const racePresetSelect = document.querySelector("#race-preset-select");
 const subhead = document.querySelector(".subhead");
 
-let horses = structuredClone(defaultHorses);
+let selectedPresetId = defaultRacePresetId;
+let horses = [];
 let autoRefreshTimer = null;
-let liveRefreshInFlight = false;
+let marketRefreshInFlight = false;
+let lastBrisnetPayload = null;
 
 const escapeHtml = (text) =>
   String(text ?? "")
@@ -49,14 +55,30 @@ const escapeHtml = (text) =>
 
 const asPercent = (value) => `${(value * 100).toFixed(1)}%`;
 
+const normalizedName = (name) =>
+  String(name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+
 const readBankroll = () => {
   const value = Number(bankrollInput.value);
   return Number.isFinite(value) && value > 0 ? value : 100;
 };
 
+const selectedPreset = () =>
+  racePresets.find((preset) => preset.id === selectedPresetId) ?? racePresets[0];
+
+const baselineHorseByName = (name) =>
+  selectedPreset().horses.find((horse) => normalizedName(horse.name) === normalizedName(name));
+
 const setLiveStatus = (message, isError = false) => {
   liveOddsStatus.textContent = `Live odds status: ${message}`;
   liveOddsStatus.style.color = isError ? "#8b1f1f" : "";
+};
+
+const setBrisnetStatus = (message, isError = false) => {
+  brisnetStatus.textContent = `BRISNET status: ${message}`;
+  brisnetStatus.style.color = isError ? "#8b1f1f" : "";
 };
 
 const createHorseRow = (horse, index) => {
@@ -100,7 +122,7 @@ const syncHorsesFromTable = () => {
 
       return {
         ...record,
-        history: defaultHorses.find((horse) => horse.name === record.name)?.history ?? "No note."
+        history: baselineHorseByName(record.name)?.history ?? "No note."
       };
     })
     .filter((horse) => horse.name);
@@ -108,7 +130,7 @@ const syncHorsesFromTable = () => {
 
 const applyLiveOdds = (oddsByHorse) => {
   const normalized = new Map(
-    Object.entries(oddsByHorse).map(([name, odds]) => [name.toLowerCase().trim(), odds])
+    Object.entries(oddsByHorse).map(([name, odds]) => [normalizedName(name), odds])
   );
   let changed = 0;
 
@@ -119,7 +141,7 @@ const applyLiveOdds = (oddsByHorse) => {
       continue;
     }
 
-    const key = nameInput.value.toLowerCase().trim();
+    const key = normalizedName(nameInput.value);
     const liveOdds = normalized.get(key);
     if (liveOdds && oddsInput.value !== liveOdds) {
       oddsInput.value = liveOdds;
@@ -130,70 +152,68 @@ const applyLiveOdds = (oddsByHorse) => {
   return changed;
 };
 
-const refreshLiveOdds = async () => {
-  if (liveRefreshInFlight) {
-    return;
-  }
+const applyBrisnetSignals = (signals) => {
+  const normalized = new Map(
+    Object.entries(signals).map(([name, signal]) => [normalizedName(name), Number(signal)])
+  );
+  let changed = 0;
 
-  syncHorsesFromTable();
-  if (!horses.length) {
-    setLiveStatus("no horses available to map odds.", true);
-    return;
-  }
-
-  liveRefreshInFlight = true;
-  liveOddsButton.disabled = true;
-  setLiveStatus("fetching latest odds...");
-
-  try {
-    const response = await fetch("/api/live-odds", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        raceConfig: liveRaceConfig,
-        horseNames: horses.map((horse) => horse.name)
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`API status ${response.status}`);
+  for (const row of [...tableBody.querySelectorAll("tr")]) {
+    const nameInput = row.querySelector('input[data-field="name"]');
+    const signalInput = row.querySelector('input[data-field="brisnetSignal"]');
+    if (!nameInput || !signalInput) {
+      continue;
     }
 
-    const payload = await response.json();
-    const updatedRows = applyLiveOdds(payload.oddsByHorse ?? {});
-    recalculate();
+    const key = normalizedName(nameInput.value);
+    if (!normalized.has(key)) {
+      continue;
+    }
+    const signal = normalized.get(key);
+    if (!Number.isFinite(signal)) {
+      continue;
+    }
 
-    const fetchedAt = payload.fetchedAt ? new Date(payload.fetchedAt).toLocaleTimeString() : "now";
-    setLiveStatus(
-      `${updatedRows} odds updated from ${payload.provider ?? "provider"} at ${fetchedAt}.`
-    );
-  } catch (error) {
-    setLiveStatus(
-      `refresh failed (${error instanceof Error ? error.message : "unknown"}). Run with node server.js for live API access.`,
-      true
-    );
-  } finally {
-    liveRefreshInFlight = false;
-    liveOddsButton.disabled = false;
+    const clamped = Math.max(0, Math.min(100, Math.round(signal)));
+    if (Number(signalInput.value) !== clamped) {
+      signalInput.value = String(clamped);
+      changed += 1;
+    }
   }
+
+  return changed;
 };
 
-const applyAutoRefresh = () => {
-  if (autoRefreshTimer) {
-    clearInterval(autoRefreshTimer);
-    autoRefreshTimer = null;
+const renderBrisnetIntel = () => {
+  if (!lastBrisnetPayload) {
+    brisnetIntelRoot.innerHTML = "<p>No BRISNET intelligence loaded yet.</p>";
+    return;
   }
 
-  if (autoRefreshToggle.checked) {
-    const everyMs = Math.max(15, Number(liveRaceConfig.refreshSeconds || 60)) * 1000;
-    autoRefreshTimer = setInterval(() => {
-      refreshLiveOdds();
-    }, everyMs);
-    setLiveStatus(`auto-refresh enabled every ${Math.round(everyMs / 1000)} seconds.`);
-    refreshLiveOdds();
-  } else {
-    setLiveStatus("auto-refresh disabled.");
-  }
+  const spot = lastBrisnetPayload.spotPlay;
+  const optix = Array.isArray(lastBrisnetPayload.optixSelections)
+    ? lastBrisnetPayload.optixSelections
+    : [];
+  const sourceLinks = Array.isArray(lastBrisnetPayload.sources)
+    ? lastBrisnetPayload.sources
+        .map(
+          (url) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></li>`
+        )
+        .join("")
+    : "";
+
+  brisnetIntelRoot.innerHTML = `
+    <div class="callout">
+      <p><strong>Spot Play:</strong> ${
+        spot
+          ? `${escapeHtml(spot.horseName)} (Race ${escapeHtml(spot.raceNumber)}, quoted ${escapeHtml(spot.quotedOdds)})`
+          : "No race-matched spot play found."
+      }</p>
+      <p><strong>Optix Matches:</strong> ${optix.length ? escapeHtml(optix.join(", ")) : "None for this race."}</p>
+      <p><strong>Signal Rule:</strong> baseline 50, +40 spot-play match, +25 Optix match.</p>
+      <ul class="source-list">${sourceLinks || "<li>No BRISNET source URLs returned.</li>"}</ul>
+    </div>
+  `;
 };
 
 const renderTopBets = (topBets) => {
@@ -237,7 +257,7 @@ const renderUndercover = (horse) => {
     <div class="callout">
       <p><strong>${escapeHtml(horse.name)}</strong> (${escapeHtml(horse.odds)})</p>
       <p>Model edge: <strong>${asPercent(horse.valueEdge)}</strong></p>
-      <p>Dark-horse profile is supported by late-kick/trend components and non-favorite pricing.</p>
+      <p>Dark-horse profile uses value edge + late-kick + improving trend.</p>
     </div>
   `;
 };
@@ -279,8 +299,8 @@ const renderTierSuggestions = (suggestions) => {
 };
 
 const renderSources = () => {
-  sourceListRoot.innerHTML = raceSources
-    .map(
+  sourceListRoot.innerHTML = selectedPreset()
+    .sources.map(
       (source) => `
         <li>
           <a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.title)}</a>
@@ -317,6 +337,102 @@ const recalculate = () => {
   renderTierSuggestions(tierSuggestions);
 };
 
+const refreshLiveOdds = async () => {
+  syncHorsesFromTable();
+  const preset = selectedPreset();
+  const response = await fetch("/api/live-odds", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      raceConfig: preset.raceConfig,
+      horseNames: horses.map((horse) => horse.name)
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Live odds API status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const updatedRows = applyLiveOdds(payload.oddsByHorse ?? {});
+  const fetchedAt = payload.fetchedAt ? new Date(payload.fetchedAt).toLocaleTimeString() : "now";
+  setLiveStatus(`${updatedRows} odds updated from ${payload.provider ?? "provider"} at ${fetchedAt}.`);
+};
+
+const refreshBrisnetSignals = async () => {
+  syncHorsesFromTable();
+  const preset = selectedPreset();
+  const response = await fetch("/api/brisnet-signals", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      brisnetConfig: preset.brisnetConfig,
+      horseNames: horses.map((horse) => horse.name)
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`BRISNET API status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const updatedRows = applyBrisnetSignals(payload.signals ?? {});
+  const fetchedAt = payload.fetchedAt ? new Date(payload.fetchedAt).toLocaleTimeString() : "now";
+  setBrisnetStatus(`${updatedRows} signal rows updated at ${fetchedAt}.`);
+  lastBrisnetPayload = payload;
+  renderBrisnetIntel();
+};
+
+const refreshMarketData = async () => {
+  if (marketRefreshInFlight) {
+    return;
+  }
+  marketRefreshInFlight = true;
+  liveOddsButton.disabled = true;
+  setLiveStatus("fetching latest odds...");
+  setBrisnetStatus("fetching BRISNET signals...");
+
+  try {
+    await refreshLiveOdds();
+  } catch (error) {
+    setLiveStatus(
+      `refresh failed (${error instanceof Error ? error.message : "unknown"}). Run with node server.js for API access.`,
+      true
+    );
+  }
+
+  try {
+    await refreshBrisnetSignals();
+  } catch (error) {
+    setBrisnetStatus(
+      `refresh failed (${error instanceof Error ? error.message : "unknown"}).`,
+      true
+    );
+  }
+
+  recalculate();
+  marketRefreshInFlight = false;
+  liveOddsButton.disabled = false;
+};
+
+const applyAutoRefresh = () => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+
+  if (autoRefreshToggle.checked) {
+    const everyMs = Math.max(15, Number(selectedPreset().raceConfig.refreshSeconds || 60)) * 1000;
+    autoRefreshTimer = setInterval(() => {
+      refreshMarketData();
+    }, everyMs);
+    setLiveStatus(`auto-refresh enabled every ${Math.round(everyMs / 1000)} seconds.`);
+    refreshMarketData();
+  } else {
+    setLiveStatus("auto-refresh disabled.");
+  }
+};
+
 const addHorse = () => {
   horses.push({
     name: `New Horse ${horses.length + 1}`,
@@ -331,22 +447,49 @@ const addHorse = () => {
     volatility: 50,
     lateKick: 70,
     improvingTrend: 70,
+    brisnetSignal: 50,
     history: "No note."
   });
   renderHorseTable();
 };
 
-const bootstrap = () => {
-  subhead.textContent = `${raceMeta.name} | ${raceMeta.date} | ${raceMeta.class} | ${raceMeta.distance} | Purse ${raceMeta.purse}`;
+const renderPresetOptions = () => {
+  racePresetSelect.innerHTML = racePresets
+    .map(
+      (preset) =>
+        `<option value="${escapeHtml(preset.id)}" ${preset.id === selectedPresetId ? "selected" : ""}>${escapeHtml(preset.label)}</option>`
+    )
+    .join("");
+};
+
+const applyPreset = (presetId) => {
+  selectedPresetId = presetId;
+  const preset = selectedPreset();
+  horses = structuredClone(preset.horses);
+  lastBrisnetPayload = null;
+  subhead.textContent = `${preset.meta.name} | ${preset.meta.date} | ${preset.meta.class} | ${preset.meta.distance} | Purse ${preset.meta.purse}`;
   renderHorseTable();
   renderSources();
+  renderBrisnetIntel();
   recalculate();
+  setLiveStatus("waiting for first refresh.");
+  setBrisnetStatus("waiting for first refresh.");
+
+  if (autoRefreshToggle.checked) {
+    applyAutoRefresh();
+  }
+};
+
+const bootstrap = () => {
+  renderPresetOptions();
+  applyPreset(selectedPresetId);
 };
 
 recalcButton.addEventListener("click", recalculate);
 addHorseButton.addEventListener("click", addHorse);
-liveOddsButton.addEventListener("click", refreshLiveOdds);
+liveOddsButton.addEventListener("click", refreshMarketData);
 autoRefreshToggle.addEventListener("change", applyAutoRefresh);
+racePresetSelect.addEventListener("change", () => applyPreset(racePresetSelect.value));
 tableBody.addEventListener("change", recalculate);
 bankrollInput.addEventListener("change", recalculate);
 

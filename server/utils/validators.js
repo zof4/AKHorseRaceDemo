@@ -61,6 +61,18 @@ export const validateCreateRaceInput = (payload) => {
       jockey_win_pct: normalizedMaybeNumber(horse?.jockey_win_pct),
       trainer_win_pct: normalizedMaybeNumber(horse?.trainer_win_pct),
       class_rating: normalizedMaybeNumber(horse?.class_rating),
+      speed_rating: normalizedMaybeNumber(horse?.speed_rating ?? horse?.speed),
+      form_rating: normalizedMaybeNumber(horse?.form_rating ?? horse?.form),
+      pace_fit_rating: normalizedMaybeNumber(horse?.pace_fit_rating ?? horse?.paceFit),
+      distance_fit_rating: normalizedMaybeNumber(horse?.distance_fit_rating ?? horse?.distanceFit),
+      connections_rating: normalizedMaybeNumber(horse?.connections_rating ?? horse?.connections),
+      consistency_rating: normalizedMaybeNumber(horse?.consistency_rating ?? horse?.consistency),
+      volatility_rating: normalizedMaybeNumber(horse?.volatility_rating ?? horse?.volatility),
+      late_kick_rating: normalizedMaybeNumber(horse?.late_kick_rating ?? horse?.lateKick),
+      improving_trend_rating: normalizedMaybeNumber(
+        horse?.improving_trend_rating ?? horse?.improvingTrend
+      ),
+      brisnet_signal: normalizedMaybeNumber(horse?.brisnet_signal ?? horse?.brisnetSignal),
       scratched: horse?.scratched ? 1 : 0
     });
   }
@@ -77,6 +89,10 @@ export const validateCreateRaceInput = (payload) => {
       status: normalizedMaybeText(payload?.status) ?? 'upcoming',
       source: normalizedMaybeText(payload?.source) ?? 'manual',
       takeout_pct: normalizedMaybeNumber(payload?.takeout_pct),
+      external_id: normalizedMaybeText(payload?.external_id),
+      race_config_json: normalizedMaybeText(payload?.race_config_json),
+      brisnet_config_json: normalizedMaybeText(payload?.brisnet_config_json),
+      sources_json: normalizedMaybeText(payload?.sources_json),
       horses: normalizedHorses
     }
   };

@@ -12,7 +12,42 @@ const badgeClasses = {
 export default function RaceList() {
   const [races, setRaces] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [importStatus, setImportStatus] = useState('');
   const [error, setError] = useState('');
+
+  const pad = (value) => String(value).padStart(2, '0');
+  const dateKeyFor = (date) =>
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+  const extractPresetDateKey = (preset) => {
+    const config = preset?.raceConfig;
+    if (!config) {
+      return null;
+    }
+    return `${config.year}-${pad(config.month)}-${pad(config.day)}`;
+  };
+
+  const importTodayTomorrow = async () => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    const targetKeys = new Set([dateKeyFor(today), dateKeyFor(tomorrow)]);
+
+    const { presets } = await api.listRacePresets();
+    const presetIds = presets
+      .filter((preset) => targetKeys.has(extractPresetDateKey(preset)))
+      .map((preset) => preset.id);
+
+    if (presetIds.length) {
+      await api.importRacePresets({ presetIds });
+      setImportStatus(`Auto-imported ${presetIds.length} presets for today/tomorrow.`);
+      return;
+    }
+
+    await api.importRacePresets({});
+    setImportStatus('Auto-imported default presets.');
+  };
 
   const load = async () => {
     setLoading(true);
@@ -28,7 +63,21 @@ export default function RaceList() {
   };
 
   useEffect(() => {
-    load();
+    const init = async () => {
+      setLoading(true);
+      setError('');
+      try {
+        await importTodayTomorrow();
+        await load();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -36,11 +85,16 @@ export default function RaceList() {
       <article className="panel flex items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">Races</h2>
-          <p className="text-sm text-stone-600">Manual races are available now. API race ingest lands in the next phase.</p>
+          <p className="text-sm text-stone-600">
+            Today/tomorrow presets are auto-imported on page load.
+          </p>
+          {importStatus ? <p className="mt-1 text-xs text-emerald-700">{importStatus}</p> : null}
         </div>
-        <Link className="btn-secondary" to="/races/new">
-          New Race
-        </Link>
+        <div className="flex gap-2">
+          <Link className="btn-secondary" to="/races/new">
+            New Race
+          </Link>
+        </div>
       </article>
 
       <article className="panel">
@@ -77,6 +131,11 @@ export default function RaceList() {
                   <p className="mt-2 text-xs text-stone-600">
                     Horses: {race.horse_count} • Takeout: {(Number(race.takeout_pct) * 100).toFixed(1)}%
                   </p>
+                  <div className="mt-3 flex gap-2">
+                    <Link className="btn-secondary" to={`/algorithm?raceId=${race.id}`}>
+                      Open In Algorithm
+                    </Link>
+                  </div>
                 </li>
               ))}
             </ul>

@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS races (
   source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'api')),
   takeout_pct REAL NOT NULL DEFAULT 0.22 CHECK (takeout_pct >= 0 AND takeout_pct <= 1),
   external_id TEXT,
+  race_config_json TEXT,
+  brisnet_config_json TEXT,
+  sources_json TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -41,6 +44,16 @@ CREATE TABLE IF NOT EXISTS horses (
   jockey_win_pct REAL,
   trainer_win_pct REAL,
   class_rating REAL,
+  speed_rating REAL,
+  form_rating REAL,
+  pace_fit_rating REAL,
+  distance_fit_rating REAL,
+  connections_rating REAL,
+  consistency_rating REAL,
+  volatility_rating REAL,
+  late_kick_rating REAL,
+  improving_trend_rating REAL,
+  brisnet_signal REAL,
   scratched INTEGER NOT NULL DEFAULT 0 CHECK (scratched IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE,

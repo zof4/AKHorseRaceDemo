@@ -20,11 +20,12 @@
       <section class="panel warning-panel" aria-labelledby="date-clarity">
         <h2 id="date-clarity">Date clarity</h2>
         <p>
-          As of <strong>Thursday, March 5, 2026 (America/Chicago)</strong>, this proposal is focused on
-          <strong>Oaklawn Park Race 6 on Friday, March 6, 2026</strong> (Allowance, 1 1/16 miles).
+          As of <strong>Thursday, March 5, 2026 (America/Chicago)</strong>, this app now supports
+          direct selection for <strong>today's Oaklawn races (March 5)</strong> and
+          <strong>tomorrow's race card (March 6)</strong>.
         </p>
         <p>
-          This is intentionally not the Arkansas Derby. The target is the exact March 6 race card.
+          This is intentionally not the Arkansas Derby. Use the race selector to switch the target race.
         </p>
       </section>
 
@@ -42,6 +43,10 @@
           <li>
             Convert base scores into model win probabilities and compare them to implied probabilities
             from projected odds.
+          </li>
+          <li>
+            Pull BRISNET signals (Spot Plays and Optix mentions) and translate them into a confidence
+            factor that can shift horse rank.
           </li>
           <li>
             Add a value adjustment so overpriced horses can rise and overbet horses can fall.
@@ -62,6 +67,10 @@
           <h2 id="workbench-title">Race workbench</h2>
           <div class="controls">
             <label>
+              Race preset
+              <select id="race-preset-select"></select>
+            </label>
+            <label>
               Bankroll ($)
               <input id="bankroll-input" type="number" min="10" step="10" value="100" />
             </label>
@@ -69,13 +78,16 @@
               Auto refresh
               <input id="auto-refresh-toggle" type="checkbox" />
             </label>
-            <button id="live-odds-btn" type="button">Refresh Live Odds</button>
+            <button id="live-odds-btn" type="button">Refresh Market Data</button>
             <button id="add-horse-btn" type="button">Add Horse</button>
             <button id="recalc-btn" type="button">Recalculate</button>
           </div>
         </div>
         <p id="live-odds-status" class="muted live-status">
           Live odds status: waiting for first refresh.
+        </p>
+        <p id="brisnet-status" class="muted live-status">
+          BRISNET status: waiting for first refresh.
         </p>
 
         <div class="table-wrap">
@@ -91,6 +103,7 @@
                 <th>Distance</th>
                 <th>Conn.</th>
                 <th>Consist.</th>
+                <th>BRIS</th>
                 <th>Vol.</th>
                 <th>Late</th>
                 <th>Trend</th>
@@ -119,12 +132,16 @@
           <h3>Opposition slip (bet against model)</h3>
           <div id="counter-slip"></div>
         </article>
+        <article>
+          <h3>BRISNET intelligence</h3>
+          <div id="brisnet-intel"></div>
+        </article>
       </section>
 
       <section class="panel" aria-labelledby="arkansas-title">
-        <h2 id="arkansas-title">March 6 race proposal (Oaklawn Race 6)</h2>
+        <h2 id="arkansas-title">Selected race proposal</h2>
         <p class="muted">
-          Suggestions are derived from March 6 race-card data plus horse history snapshots.
+          Suggestions are derived from live odds, BRISNET, and horse history snapshots.
         </p>
         <div id="tier-suggestions" class="tier-grid"></div>
       </section>

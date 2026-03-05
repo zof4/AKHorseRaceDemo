@@ -38,5 +38,75 @@ export const api = {
       body: JSON.stringify(payload)
     });
     return toJson(response);
+  },
+
+  listRacePresets: async () => {
+    const response = await fetch('/api/races/presets');
+    return toJson(response);
+  },
+
+  importRacePresets: async (payload = {}) => {
+    const response = await fetch('/api/races/import/presets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return toJson(response);
+  },
+
+  getPools: async (raceId) => {
+    const response = await fetch(`/api/pools/${raceId}`);
+    return toJson(response);
+  },
+
+  quoteBet: async (payload) => {
+    const response = await fetch('/api/bets/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return toJson(response);
+  },
+
+  placeBet: async (payload) => {
+    const response = await fetch('/api/bets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return toJson(response);
+  },
+
+  listBets: async ({ raceId, userId } = {}) => {
+    const query = new URLSearchParams();
+    if (raceId) {
+      query.set('raceId', String(raceId));
+    }
+    if (userId) {
+      query.set('userId', String(userId));
+    }
+
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const response = await fetch(`/api/bets${suffix}`);
+    return toJson(response);
+  },
+
+  analyzeRace: async (raceId, bankroll) => {
+    const query = new URLSearchParams();
+    if (bankroll) {
+      query.set('bankroll', String(bankroll));
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const response = await fetch(`/api/algorithm/race/${raceId}/analyze${suffix}`);
+    return toJson(response);
+  },
+
+  refreshRaceMarket: async (raceId, bankroll) => {
+    const response = await fetch(`/api/algorithm/race/${raceId}/refresh-market`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bankroll })
+    });
+    return toJson(response);
   }
 };

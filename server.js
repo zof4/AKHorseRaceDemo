@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getLiveOdds } from "./liveOddsProviders.js";
+import { getBrisnetSignals, getLiveOdds } from "./liveOddsProviders.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -101,6 +101,27 @@ const handleLiveOdds = async (request, response) => {
   }
 };
 
+const handleBrisnetSignals = async (request, response) => {
+  try {
+    const body = await readBody(request);
+    const brisnetConfig = body?.brisnetConfig;
+    const horseNames = Array.isArray(body?.horseNames) ? body.horseNames : [];
+
+    if (!brisnetConfig || typeof brisnetConfig !== "object") {
+      sendJson(response, 400, { error: "Invalid brisnetConfig payload." });
+      return;
+    }
+
+    const result = await getBrisnetSignals(brisnetConfig, horseNames);
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 502, {
+      error: "BRISNET signal fetch failed.",
+      detail: error instanceof Error ? error.message : "Unknown error"
+    });
+  }
+};
+
 const server = createServer(async (request, response) => {
   if (!request.url || !request.method) {
     response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
@@ -118,6 +139,11 @@ const server = createServer(async (request, response) => {
 
   if (pathname === "/api/live-odds" && request.method === "POST") {
     await handleLiveOdds(request, response);
+    return;
+  }
+
+  if (pathname === "/api/brisnet-signals" && request.method === "POST") {
+    await handleBrisnetSignals(request, response);
     return;
   }
 

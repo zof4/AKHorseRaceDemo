@@ -2,14 +2,21 @@
   "name": "horse-race-demo",
   "private": true,
   "version": "0.1.0",
+  "type": "module",
   "workspaces": [
     "server",
     "client"
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
+    "dev:3002": "PORT=3002 API_PORT=3002 concurrently \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
+    "dev:4011": "PORT=4011 API_PORT=4011 concurrently \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
     "dev:server": "npm run dev --workspace server",
+    "dev:server:3002": "PORT=3002 npm run dev --workspace server",
+    "dev:server:4011": "PORT=4011 npm run dev --workspace server",
     "dev:client": "npm run dev --workspace client",
+    "dev:client:3002": "API_PORT=3002 npm run dev --workspace client",
+    "dev:client:4011": "API_PORT=4011 npm run dev --workspace client",
     "start": "npm run start --workspace server",
     "build": "npm run build --workspace client",
     "start:legacy": "node server.js",

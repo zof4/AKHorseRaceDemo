@@ -29,6 +29,10 @@ const stripHtml = (html) =>
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const normalizeOdds = (odds) => odds.replace(/\s+/g, '');
+const normalizeHorseName = (name) =>
+  String(name ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 
 export const buildBettingNewsRaceUrl = (raceConfig) => {
   const { trackSlug, year, month, day, raceNumber } = raceConfig;
@@ -83,6 +87,144 @@ export const fetchBettingNewsOdds = async (raceConfig, horseNames) => {
     fetchedAt: new Date().toISOString(),
     oddsByHorse
   };
+};
+
+const stripHtmlToLines = (html) => {
+  const text = decodeHtmlEntities(
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|h1|h2|h3|h4|h5|h6|li|div|section|article|tr|td)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+  );
+
+  return text
+    .split(/\n+/)
+    .map((line) => collapseWhitespace(line))
+    .filter(Boolean);
+};
+
+const extractBrisnetSpotPlay = (lines, trackName, raceNumber) => {
+  const trackIndex = lines.findIndex((line) => line.toLowerCase().includes(trackName.toLowerCase()));
+  if (trackIndex < 0) {
+    return null;
+  }
+
+  for (let index = trackIndex; index < Math.min(lines.length, trackIndex + 70); index += 1) {
+    const line = lines[index];
+    const raceMatch = line.match(/^Race\s+(\d+)/i);
+    if (!raceMatch || Number(raceMatch[1]) !== Number(raceNumber)) {
+      continue;
+    }
+
+    for (let probe = index + 1; probe < Math.min(lines.length, index + 8); probe += 1) {
+      const candidate = lines[probe];
+      const candidateMatch = candidate.match(/^(.+?)\s+(\d+\s*-\s*\d+)$/);
+      if (candidateMatch) {
+        return {
+          raceNumber: Number(raceMatch[1]),
+          horseName: candidateMatch[1].trim(),
+          quotedOdds: candidateMatch[2].replace(/\s+/g, '')
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+const extractBrisnetOptixSelections = (lines, raceNumber) => {
+  const normalizedRace = Number(raceNumber);
+  let activeRace = null;
+  const selections = [];
+
+  for (const line of lines) {
+    const raceMatch = line.match(/RACE\s+(\d+)/i);
+    if (raceMatch) {
+      activeRace = Number(raceMatch[1]);
+      continue;
+    }
+
+    if (activeRace !== normalizedRace) {
+      continue;
+    }
+
+    const horseMatch = line.match(/#\d+\s+([A-Z][A-Z' -]+)/);
+    if (horseMatch) {
+      selections.push(horseMatch[1].trim());
+    }
+  }
+
+  return [...new Set(selections)];
+};
+
+const computeBrisnetSignals = (horseNames, spotPlay, optixSelections) => {
+  const signals = {};
+  const normalizedSpot = spotPlay ? normalizeHorseName(spotPlay.horseName) : '';
+  const normalizedOptix = new Set(optixSelections.map((name) => normalizeHorseName(name)));
+
+  for (const horseName of horseNames) {
+    const normalized = normalizeHorseName(horseName);
+    let signal = 50;
+
+    if (normalizedSpot && normalized === normalizedSpot) {
+      signal += 40;
+    }
+    if (normalizedOptix.has(normalized)) {
+      signal += 25;
+    }
+
+    signals[horseName] = Math.max(0, Math.min(100, signal));
+  }
+
+  return signals;
+};
+
+export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
+  const cleanHorseNames = [...new Set(horseNames.map((name) => String(name).trim()).filter(Boolean))];
+  const result = {
+    provider: 'BRISNET',
+    fetchedAt: new Date().toISOString(),
+    spotPlay: null,
+    optixSelections: [],
+    signals: Object.fromEntries(cleanHorseNames.map((name) => [name, 50])),
+    sources: []
+  };
+
+  if (!brisnetConfig || typeof brisnetConfig !== 'object') {
+    return result;
+  }
+
+  const { spotPlaysUrl, optixUrl, trackName, raceNumber } = brisnetConfig;
+  const normalizedRaceNumber = Number(raceNumber);
+
+  if (spotPlaysUrl) {
+    const spotResponse = await fetch(spotPlaysUrl, { headers: DEFAULT_HEADERS });
+    if (spotResponse.ok) {
+      const spotHtml = await spotResponse.text();
+      const lines = stripHtmlToLines(spotHtml);
+      result.spotPlay = extractBrisnetSpotPlay(
+        lines,
+        trackName ?? 'Oaklawn Park',
+        normalizedRaceNumber
+      );
+      result.sources.push(spotPlaysUrl);
+    }
+  }
+
+  if (optixUrl) {
+    const optixResponse = await fetch(optixUrl, { headers: DEFAULT_HEADERS });
+    if (optixResponse.ok) {
+      const optixHtml = await optixResponse.text();
+      const lines = stripHtmlToLines(optixHtml);
+      result.optixSelections = extractBrisnetOptixSelections(lines, normalizedRaceNumber);
+      result.sources.push(optixUrl);
+    }
+  }
+
+  result.signals = computeBrisnetSignals(cleanHorseNames, result.spotPlay, result.optixSelections);
+  return result;
 };
 
 export const getLiveOdds = async (raceConfig, horseNames) => {

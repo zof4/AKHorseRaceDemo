@@ -114,6 +114,14 @@ input {
   min-width: 3.7rem;
 }
 
+select {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.36rem 0.42rem;
+  min-width: 12.5rem;
+  background: #fff;
+}
+
 input[type="checkbox"] {
   width: auto;
   min-width: 0;
@@ -236,6 +244,6 @@ footer {
 
 @media (min-width: 980px) {
   .results-grid {
-    grid-template-columns: 1.25fr 1fr 1fr 1fr;
+    grid-template-columns: repeat(5, minmax(190px, 1fr));
   }
 }

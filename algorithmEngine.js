@@ -1,13 +1,14 @@
 const SCORE_WEIGHTS = {
-  speed: 0.22,
-  form: 0.18,
-  class: 0.14,
+  speed: 0.2,
+  form: 0.17,
+  class: 0.13,
   paceFit: 0.12,
   distanceFit: 0.1,
   connections: 0.09,
   consistency: 0.08,
   lateKick: 0.04,
-  improvingTrend: 0.03
+  improvingTrend: 0.03,
+  brisnetSignal: 0.04
 };
 
 const DEFAULT_ODDS_PROBABILITY = 0.1;

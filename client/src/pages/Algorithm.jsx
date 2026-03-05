@@ -1,186 +1,285 @@
 import { useEffect, useMemo, useState } from 'react';
-import { defaultHorses, liveRaceConfig, raceMeta, raceSources } from '../lib/algorithmSeed.js';
-
-const NUMERIC_FIELDS = [
-  'speed',
-  'form',
-  'class',
-  'paceFit',
-  'distanceFit',
-  'connections',
-  'consistency',
-  'volatility',
-  'lateKick',
-  'improvingTrend'
-];
+import { useSearchParams } from 'react-router-dom';
+import { api } from '../lib/api.js';
 
 const asPercent = (value) => `${(Number(value || 0) * 100).toFixed(1)}%`;
+const pad = (value) => String(value).padStart(2, '0');
 
-const emptyHorse = (index) => ({
-  name: `New Horse ${index + 1}`,
-  odds: '10/1',
-  speed: 70,
-  form: 70,
-  class: 70,
-  paceFit: 70,
-  distanceFit: 70,
-  connections: 70,
-  consistency: 70,
-  volatility: 50,
-  lateKick: 70,
-  improvingTrend: 70,
-  history: 'No note.'
-});
+const dateKeyFor = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+const extractPresetDateKey = (preset) => {
+  const config = preset?.raceConfig;
+  if (!config) {
+    return null;
+  }
+  return `${config.year}-${pad(config.month)}-${pad(config.day)}`;
+};
+
+const extractRaceDateKey = (race) => {
+  const externalId = String(race?.external_id ?? '');
+  const match = externalId.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+
+  if (race?.post_time) {
+    const date = new Date(race.post_time);
+    if (!Number.isNaN(date.getTime())) {
+      return dateKeyFor(date);
+    }
+  }
+
+  return null;
+};
 
 export default function Algorithm() {
-  const [horses, setHorses] = useState(() => structuredClone(defaultHorses));
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [races, setRaces] = useState([]);
+  const [race, setRace] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
   const [bankroll, setBankroll] = useState(100);
   const [autoRefresh, setAutoRefresh] = useState(false);
-  const [status, setStatus] = useState('Waiting for first live-odds refresh.');
-  const [analysis, setAnalysis] = useState(null);
-  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
-  const [loadingOdds, setLoadingOdds] = useState(false);
+  const [dayMode, setDayMode] = useState('today');
+  const [loading, setLoading] = useState(true);
+  const [refreshingMarket, setRefreshingMarket] = useState(false);
+  const [brisnetIntel, setBrisnetIntel] = useState(null);
   const [error, setError] = useState('');
+  const [status, setStatus] = useState('Waiting for first refresh.');
 
-  const summary = useMemo(
-    () => `${raceMeta.name} | ${raceMeta.date} | ${raceMeta.class} | ${raceMeta.distance} | Purse ${raceMeta.purse}`,
-    []
+  const selectedRaceId = Number(searchParams.get('raceId') || 0);
+
+  const todayKey = useMemo(() => {
+    const now = new Date();
+    return dateKeyFor(new Date(now.getFullYear(), now.getMonth(), now.getDate()));
+  }, []);
+
+  const tomorrowKey = useMemo(() => {
+    const now = new Date();
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return dateKeyFor(tomorrow);
+  }, []);
+
+  const filteredRaces = useMemo(() => {
+    const targetKey = dayMode === 'today' ? todayKey : tomorrowKey;
+    const matches = races.filter((entry) => extractRaceDateKey(entry) === targetKey);
+    return matches.length ? matches : races;
+  }, [races, dayMode, todayKey, tomorrowKey]);
+
+  const selectedRace = useMemo(
+    () => filteredRaces.find((entry) => entry.id === selectedRaceId) ?? filteredRaces[0] ?? null,
+    [filteredRaces, selectedRaceId]
   );
 
-  const runAnalysis = async (nextHorses = horses, nextBankroll = bankroll) => {
-    if (nextHorses.filter((horse) => horse.name.trim()).length < 3) {
-      setAnalysis(null);
-      setError('Add at least three horses to run analysis.');
-      return;
-    }
-
-    setLoadingAnalysis(true);
-    setError('');
-
-    try {
-      const response = await fetch('/api/algorithm/analyze', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ horses: nextHorses, bankroll: nextBankroll })
-      });
-
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || `Analyze failed (${response.status})`);
-      }
-
-      setAnalysis(payload);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoadingAnalysis(false);
-    }
+  const loadRaces = async () => {
+    const { races } = await api.listRaces();
+    setRaces(races);
+    return races;
   };
 
-  const refreshLiveOdds = async () => {
-    if (loadingOdds) {
+  const loadRaceDetail = async (raceId) => {
+    const { race } = await api.getRace(raceId);
+    setRace(race);
+    return race;
+  };
+
+  const runAnalysis = async (raceId, bankrollValue = bankroll) => {
+    const { ranked, undercoverWinner, topBets, counterBets, tierSuggestions } = await api.analyzeRace(
+      raceId,
+      bankrollValue
+    );
+    setAnalysis({ ranked, undercoverWinner, topBets, counterBets, tierSuggestions });
+  };
+
+  const autoImportTodayTomorrow = async () => {
+    const { presets } = await api.listRacePresets();
+    const targetDateKeys = new Set([todayKey, tomorrowKey]);
+    const presetIds = presets
+      .filter((preset) => targetDateKeys.has(extractPresetDateKey(preset)))
+      .map((preset) => preset.id);
+
+    if (presetIds.length) {
+      await api.importRacePresets({ presetIds });
       return;
     }
 
-    setLoadingOdds(true);
-    setStatus('Fetching live odds...');
-    setError('');
-
-    try {
-      const response = await fetch('/api/algorithm/live-odds', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          raceConfig: liveRaceConfig,
-          horseNames: horses.map((horse) => horse.name)
-        })
-      });
-
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || `Live odds failed (${response.status})`);
-      }
-
-      const oddsMap = payload.oddsByHorse || {};
-      let updated = 0;
-      const nextHorses = horses.map((horse) => {
-        const nextOdds = oddsMap[horse.name];
-        if (!nextOdds || nextOdds === horse.odds) {
-          return horse;
-        }
-        updated += 1;
-        return { ...horse, odds: nextOdds };
-      });
-
-      setHorses(nextHorses);
-      setStatus(`${updated} odds updated from ${payload.provider} at ${new Date(payload.fetchedAt).toLocaleTimeString()}.`);
-      await runAnalysis(nextHorses, bankroll);
-    } catch (err) {
-      setError(err.message);
-      setStatus('Live odds refresh failed.');
-    } finally {
-      setLoadingOdds(false);
-    }
+    await api.importRacePresets({});
   };
 
   useEffect(() => {
-    runAnalysis();
+    const bootstrap = async () => {
+      setLoading(true);
+      setError('');
+
+      try {
+        await autoImportTodayTomorrow();
+        const raceRows = await loadRaces();
+        if (!raceRows.length) {
+          setLoading(false);
+          return;
+        }
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    bootstrap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (!autoRefresh) {
+    if (!filteredRaces.length) {
+      return;
+    }
+
+    if (!filteredRaces.some((entry) => entry.id === selectedRaceId)) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('raceId', String(filteredRaces[0].id));
+        return next;
+      });
+    }
+  }, [filteredRaces, selectedRaceId, setSearchParams]);
+
+  useEffect(() => {
+    if (!selectedRace) {
+      return;
+    }
+
+    const sync = async () => {
+      setError('');
+      try {
+        await loadRaceDetail(selectedRace.id);
+        await runAnalysis(selectedRace.id, bankroll);
+      } catch (err) {
+        setError(err.message);
+      }
+    };
+
+    sync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRace?.id]);
+
+  useEffect(() => {
+    if (!autoRefresh || !selectedRace) {
       return undefined;
     }
 
-    const ms = Math.max(15, Number(liveRaceConfig.refreshSeconds || 60)) * 1000;
-    const id = setInterval(() => {
-      refreshLiveOdds();
-    }, ms);
+    const timer = setInterval(() => {
+      refreshMarket();
+    }, 60000);
 
-    return () => clearInterval(id);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, horses, bankroll]);
+  }, [autoRefresh, selectedRace?.id, bankroll]);
 
-  const updateHorse = (index, key, rawValue) => {
-    const value = NUMERIC_FIELDS.includes(key) ? Number(rawValue) : rawValue;
-    const nextHorses = horses.map((horse, horseIndex) => {
-      if (horseIndex !== index) {
-        return horse;
-      }
-      if (NUMERIC_FIELDS.includes(key)) {
-        const numeric = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
-        return { ...horse, [key]: numeric };
-      }
-      return { ...horse, [key]: value };
+  const refreshMarket = async () => {
+    if (!selectedRace || refreshingMarket) {
+      return;
+    }
+
+    setRefreshingMarket(true);
+    setError('');
+    setStatus('Refreshing live odds and BRISNET signals...');
+
+    try {
+      const payload = await api.refreshRaceMarket(selectedRace.id, bankroll);
+      await loadRaceDetail(selectedRace.id);
+      setAnalysis(payload.analysis);
+      setBrisnetIntel(payload.market?.brisnet ?? null);
+      setStatus(
+        `Market refreshed: odds updates ${payload.updated.odds}, signal updates ${payload.updated.signals} at ${new Date(
+          payload.fetchedAt
+        ).toLocaleTimeString()}.`
+      );
+    } catch (err) {
+      setError(err.message);
+      setStatus('Refresh failed.');
+    } finally {
+      setRefreshingMarket(false);
+    }
+  };
+
+  const onRaceChange = (event) => {
+    const raceId = Number(event.target.value);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('raceId', String(raceId));
+      return next;
     });
-
-    setHorses(nextHorses);
+    setBrisnetIntel(null);
   };
 
-  const addHorse = () => {
-    setHorses((prev) => [...prev, emptyHorse(prev.length)]);
+  const onRecalculate = async () => {
+    if (!selectedRace) {
+      return;
+    }
+
+    try {
+      setError('');
+      await runAnalysis(selectedRace.id, bankroll);
+      setStatus('Analysis recalculated.');
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
-  const onRecalculate = () => {
-    runAnalysis(horses, bankroll);
-  };
+  if (loading) {
+    return <section className="panel">Loading algorithm workspace...</section>;
+  }
+
+  if (!races.length) {
+    return (
+      <section className="panel">
+        <h2 className="text-lg font-semibold">Algorithm Systems</h2>
+        <p className="mt-2 text-sm text-stone-600">No races are imported yet.</p>
+      </section>
+    );
+  }
 
   return (
     <section className="grid gap-4">
       <article className="panel">
         <h2 className="text-lg font-semibold">Algorithm Systems</h2>
-        <p className="mt-1 text-sm text-stone-600">{summary}</p>
-        <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-stone-700">
-          <li>Score each horse on weighted performance and risk factors.</li>
-          <li>Convert base ratings into model probability and value edge vs. market odds.</li>
-          <li>Generate top-five tickets plus a sleeper outside top-level picks.</li>
-          <li>Produce counter-bets so users can fade the model baseline.</li>
-        </ol>
+        <p className="mt-1 text-sm text-stone-600">
+          Races auto-import from today ({todayKey}) and tomorrow ({tomorrowKey}); no manual import needed.
+        </p>
+        <div className="mt-3 inline-flex overflow-hidden rounded-md border border-stone-300">
+          <button
+            type="button"
+            onClick={() => setDayMode('today')}
+            className={`px-3 py-2 text-sm font-semibold ${
+              dayMode === 'today' ? 'bg-amber-800 text-white' : 'bg-white text-stone-700'
+            }`}
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            onClick={() => setDayMode('tomorrow')}
+            className={`px-3 py-2 text-sm font-semibold ${
+              dayMode === 'tomorrow' ? 'bg-amber-800 text-white' : 'bg-white text-stone-700'
+            }`}
+          >
+            Tomorrow
+          </button>
+        </div>
       </article>
 
       <article className="panel">
         <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-stone-600">
+            Race
+            <select className="input mt-1" value={selectedRace?.id ?? ''} onChange={onRaceChange}>
+              {filteredRaces.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name} ({entry.track} #{entry.race_number || '-'})
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="text-xs text-stone-600">
             Bankroll ($)
             <input
@@ -198,73 +297,88 @@ export default function Algorithm() {
               checked={autoRefresh}
               onChange={(event) => setAutoRefresh(event.target.checked)}
             />
-            Auto refresh odds
+            Auto refresh
           </label>
-          <button className="btn-secondary" type="button" onClick={refreshLiveOdds} disabled={loadingOdds}>
-            {loadingOdds ? 'Refreshing...' : 'Refresh Live Odds'}
+          <button className="btn-secondary" type="button" onClick={refreshMarket} disabled={refreshingMarket}>
+            {refreshingMarket ? 'Refreshing...' : 'Refresh Market'}
           </button>
-          <button className="btn-secondary" type="button" onClick={addHorse}>
-            Add Horse
-          </button>
-          <button className="btn-primary" type="button" onClick={onRecalculate} disabled={loadingAnalysis}>
-            {loadingAnalysis ? 'Calculating...' : 'Recalculate'}
+          <button className="btn-primary" type="button" onClick={onRecalculate}>
+            Recalculate
           </button>
         </div>
-        <p className="mt-3 text-sm text-stone-600">Live odds status: {status}</p>
+        <p className="mt-2 text-sm text-stone-600">{status}</p>
         {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
       </article>
 
-      <article className="panel overflow-x-auto">
-        <table className="min-w-[980px] text-left text-sm">
-          <thead>
-            <tr className="border-b border-stone-300 text-xs uppercase tracking-wide text-stone-500">
-              <th className="px-2 py-2">Horse</th>
-              <th className="px-2 py-2">Odds</th>
-              <th className="px-2 py-2">Speed</th>
-              <th className="px-2 py-2">Form</th>
-              <th className="px-2 py-2">Class</th>
-              <th className="px-2 py-2">Pace</th>
-              <th className="px-2 py-2">Distance</th>
-              <th className="px-2 py-2">Conn.</th>
-              <th className="px-2 py-2">Consist.</th>
-              <th className="px-2 py-2">Vol.</th>
-              <th className="px-2 py-2">Late</th>
-              <th className="px-2 py-2">Trend</th>
-            </tr>
-          </thead>
-          <tbody>
-            {horses.map((horse, index) => (
-              <tr key={`${horse.name}-${index}`} className="border-b border-stone-200">
-                <td className="px-2 py-2">
-                  <input
-                    className="input min-w-44"
-                    value={horse.name}
-                    onChange={(event) => updateHorse(index, 'name', event.target.value)}
-                  />
-                </td>
-                <td className="px-2 py-2">
-                  <input
-                    className="input min-w-20"
-                    value={horse.odds}
-                    onChange={(event) => updateHorse(index, 'odds', event.target.value)}
-                  />
-                </td>
-                {NUMERIC_FIELDS.map((field) => (
-                  <td key={field} className="px-2 py-2">
-                    <input
-                      className="input min-w-16"
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={horse[field]}
-                      onChange={(event) => updateHorse(index, field, event.target.value)}
-                    />
-                  </td>
+      {race ? (
+        <article className="panel">
+          <h3 className="text-base font-semibold">{race.name}</h3>
+          <p className="mt-1 text-xs text-stone-600">
+            {race.track} • Race {race.race_number || '-'} • {race.distance || 'Distance TBD'} •
+            {'  '}status: {race.status}
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-[900px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-stone-300 text-xs uppercase tracking-wide text-stone-500">
+                  <th className="px-2 py-2">Horse</th>
+                  <th className="px-2 py-2">Odds</th>
+                  <th className="px-2 py-2">Speed</th>
+                  <th className="px-2 py-2">Form</th>
+                  <th className="px-2 py-2">Class</th>
+                  <th className="px-2 py-2">Pace</th>
+                  <th className="px-2 py-2">Distance</th>
+                  <th className="px-2 py-2">Conn.</th>
+                  <th className="px-2 py-2">Consist.</th>
+                  <th className="px-2 py-2">BRIS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {race.horses.map((horse) => (
+                  <tr key={horse.id} className="border-b border-stone-200">
+                    <td className="px-2 py-2">{horse.name}</td>
+                    <td className="px-2 py-2">{horse.morning_line_odds || '-'}</td>
+                    <td className="px-2 py-2">{Number(horse.speed_rating ?? 0).toFixed(0)}</td>
+                    <td className="px-2 py-2">{Number(horse.form_rating ?? 0).toFixed(0)}</td>
+                    <td className="px-2 py-2">{Number(horse.class_rating ?? 0).toFixed(0)}</td>
+                    <td className="px-2 py-2">{Number(horse.pace_fit_rating ?? 0).toFixed(0)}</td>
+                    <td className="px-2 py-2">{Number(horse.distance_fit_rating ?? 0).toFixed(0)}</td>
+                    <td className="px-2 py-2">{Number(horse.connections_rating ?? 0).toFixed(0)}</td>
+                    <td className="px-2 py-2">{Number(horse.consistency_rating ?? 0).toFixed(0)}</td>
+                    <td className="px-2 py-2">{Number(horse.brisnet_signal ?? 0).toFixed(0)}</td>
+                  </tr>
                 ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      ) : null}
+
+      <article className="panel">
+        <h3 className="text-base font-semibold">BRISNET Intelligence</h3>
+        {brisnetIntel ? (
+          <div className="mt-2 grid gap-2 text-sm text-stone-700">
+            <p>
+              Spot Play:{' '}
+              {brisnetIntel.spotPlay
+                ? `${brisnetIntel.spotPlay.horseName} (Race ${brisnetIntel.spotPlay.raceNumber}, quoted ${brisnetIntel.spotPlay.quotedOdds})`
+                : 'No spot play matched this selected race.'}
+            </p>
+            <p>
+              Optix Matches:{' '}
+              {Array.isArray(brisnetIntel.optixSelections) && brisnetIntel.optixSelections.length
+                ? brisnetIntel.optixSelections.join(', ')
+                : 'None returned for this race.'}
+            </p>
+            <p className="text-xs text-stone-600">
+              Signal formula: baseline 50, +40 spot-play match, +25 Optix mention.
+            </p>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-stone-600">
+            No BRISNET payload loaded yet. Run Refresh Market to ingest latest signals.
+          </p>
+        )}
       </article>
 
       <section className="grid gap-4 lg:grid-cols-2">
@@ -292,7 +406,6 @@ export default function Algorithm() {
                 <strong>{analysis.undercoverWinner.name}</strong> ({analysis.undercoverWinner.odds})
               </p>
               <p>Model edge: {asPercent(analysis.undercoverWinner.valueEdge)}</p>
-              <p className="text-xs text-stone-600">{analysis.undercoverWinner.history || 'No note.'}</p>
             </div>
           ) : (
             <p className="mt-3 text-sm text-stone-500">No sleeper available for the current field size.</p>
@@ -343,7 +456,7 @@ export default function Algorithm() {
       <article className="panel">
         <h3 className="text-base font-semibold">Sources Used</h3>
         <ul className="mt-3 grid gap-3 text-sm">
-          {raceSources.map((source) => (
+          {(race?.sources || []).map((source) => (
             <li key={source.url} className="rounded-md border border-stone-200 p-3">
               <a className="font-semibold text-amber-900 underline" href={source.url} target="_blank" rel="noreferrer">
                 {source.title}

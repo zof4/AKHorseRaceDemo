@@ -15,6 +15,8 @@ Mobile-first local horse race betting app for small groups (2-5 players), with a
   - Server-backed race analysis endpoint
   - Top-five tickets, undercover winner, and counter-bets
   - Live-odds refresh endpoint for race-card updates
+  - BRISNET signal ingestion endpoint (Spot Plays + Optix parsing)
+  - Preset selector for Oaklawn March 5 and March 6 race cards
 - Phase 2+ (bet engine, settlement, algorithm service routes, external data ingestion) is next.
 
 ## Tech Stack
@@ -42,6 +44,18 @@ cp .env.example .env
 npm run dev
 ```
 
+If port `3001` is already used on your machine (for example by Docker), run:
+
+```bash
+npm run dev:3002
+```
+
+If `3002` is also occupied, run:
+
+```bash
+npm run dev:4011
+```
+
 Or use:
 
 ```bash
@@ -63,8 +77,14 @@ Or use:
 - `GET /api/races/:raceId`
 - `POST /api/races`
 - `PATCH /api/races/:raceId/status`
+- `GET /api/races/presets`
+- `POST /api/races/import/presets` (defaults to today+tomorrow presets)
 - `POST /api/algorithm/analyze`
 - `POST /api/algorithm/live-odds`
+- `POST /api/algorithm/brisnet-signals`
+- `GET /api/algorithm/race/:raceId/analyze`
+- `POST /api/algorithm/race/:raceId/refresh-market`
+- `POST /api/algorithm/brisnet-signals`
 
 ## Repo Structure
 
