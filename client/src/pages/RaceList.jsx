@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { markAutoImportRan, shouldRunAutoImport } from '../lib/autoImportCache.js';
 
 const badgeClasses = {
   open: 'bg-emerald-100 text-emerald-800',
@@ -8,6 +9,7 @@ const badgeClasses = {
   closed: 'bg-amber-100 text-amber-900',
   official: 'bg-stone-200 text-stone-800'
 };
+const AUTO_IMPORT_TTL_MS = 10 * 60 * 1000;
 
 export default function RaceList() {
   const [races, setRaces] = useState([]);
@@ -34,6 +36,20 @@ export default function RaceList() {
     tomorrow.setDate(today.getDate() + 1);
     const targetKeys = new Set([dateKeyFor(today), dateKeyFor(tomorrow)]);
 
+    const dates = [...targetKeys];
+    const importDecision = shouldRunAutoImport({
+      scope: 'today-tomorrow',
+      trackCode: 'OP',
+      dates,
+      ttlMs: AUTO_IMPORT_TTL_MS
+    });
+
+    if (!importDecision.run) {
+      const ageMinutes = Math.max(0, Math.round((importDecision.ageMs ?? 0) / 60000));
+      setImportStatus(`Using cached auto-import (${ageMinutes} minute${ageMinutes === 1 ? '' : 's'} old).`);
+      return;
+    }
+
     const { presets } = await api.listRacePresets();
     const presetIds = presets
       .filter((preset) => targetKeys.has(extractPresetDateKey(preset)))
@@ -48,11 +64,11 @@ export default function RaceList() {
     }
 
     try {
-      const dates = [...targetKeys];
       const result = await api.importEquibaseRaces({ trackCode: 'OP', dates });
       if (Array.isArray(result.imported) && result.imported.length) {
         setImportStatus((prev) => `${prev} Added ${result.imported.length} live Equibase races.`);
       }
+      markAutoImportRan({ signature: importDecision.signature });
     } catch (err) {
       setImportStatus((prev) => `${prev} Live Equibase import skipped (${err.message}).`);
     }

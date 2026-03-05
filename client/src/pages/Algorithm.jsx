@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { markAutoImportRan, shouldRunAutoImport } from '../lib/autoImportCache.js';
 import BetPlacementModal from '../components/BetPlacementModal.jsx';
 
 const asPercent = (value) => `${(Number(value || 0) * 100).toFixed(1)}%`;
@@ -110,6 +111,7 @@ const tierToneClasses = {
   'Mid Bet': 'border-amber-200 bg-amber-50',
   'Long-Shot Bet': 'border-rose-200 bg-rose-50'
 };
+const AUTO_IMPORT_TTL_MS = 10 * 60 * 1000;
 
 const STORAGE_KEYS = {
   lastRaceId: 'hrd:algorithm:lastRaceId',
@@ -203,7 +205,9 @@ export default function Algorithm() {
   const [betModalOpen, setBetModalOpen] = useState(false);
   const [betDraft, setBetDraft] = useState(null);
   const [presetHistoryByExternalRaceId, setPresetHistoryByExternalRaceId] = useState({});
-  const marketPrimedRaceIdsRef = useRef(new Set());
+  const selectedRaceIdRef = useRef(0);
+  const raceSyncRequestIdRef = useRef(0);
+  const marketRefreshRequestIdRef = useRef(0);
 
   const selectedRaceId = Number(searchParams.get('raceId') || 0);
   const selectedRaceExternalId = String(searchParams.get('raceExternalId') || '').trim();
@@ -255,6 +259,10 @@ export default function Algorithm() {
 
     return filteredRaces[0] ?? races[0] ?? null;
   }, [filteredRaces, races, selectedRaceId, selectedRaceExternalId]);
+
+  useEffect(() => {
+    selectedRaceIdRef.current = Number(selectedRace?.id ?? 0);
+  }, [selectedRace?.id]);
 
   const totalHorseCount = Array.isArray(race?.horses) ? race.horses.length : 0;
   const activeHorseCount = Array.isArray(race?.horses)
@@ -442,7 +450,6 @@ export default function Algorithm() {
 
   const loadRaceDetail = async (raceId) => {
     const { race: row } = await api.getRace(raceId);
-    setRace(row);
     return row;
   };
 
@@ -460,7 +467,7 @@ export default function Algorithm() {
       raceId,
       bankrollValue
     );
-    setAnalysis({
+    return {
       ranked,
       rankedWithoutBrisnet,
       brisnetImpact,
@@ -469,12 +476,13 @@ export default function Algorithm() {
       counterBets,
       tierSuggestions,
       modelMeta
-    });
+    };
   };
 
   const autoImportTodayTomorrow = async () => {
     const { presets } = await api.listRacePresets();
     const targetDateKeys = new Set([todayKey, tomorrowKey]);
+    const dates = [todayKey, tomorrowKey];
 
     const presetHorseByRace = {};
     for (const preset of presets) {
@@ -485,6 +493,19 @@ export default function Algorithm() {
       presetHorseByRace[preset.id] = horsesByName;
     }
     setPresetHistoryByExternalRaceId(presetHorseByRace);
+
+    const importDecision = shouldRunAutoImport({
+      scope: 'today-tomorrow',
+      trackCode: 'OP',
+      dates,
+      ttlMs: AUTO_IMPORT_TTL_MS
+    });
+
+    if (!importDecision.run) {
+      const ageMinutes = Math.max(0, Math.round((importDecision.ageMs ?? 0) / 60000));
+      setStatus(`Using cached race import (${ageMinutes} minute${ageMinutes === 1 ? '' : 's'} old).`);
+      return;
+    }
 
     const presetIds = presets
       .filter((preset) => targetDateKeys.has(extractPresetDateKey(preset)))
@@ -499,8 +520,9 @@ export default function Algorithm() {
     try {
       await api.importEquibaseRaces({
         trackCode: 'OP',
-        dates: [todayKey, tomorrowKey]
+        dates
       });
+      markAutoImportRan({ signature: importDecision.signature });
     } catch (err) {
       setStatus(`Preset import completed; live Equibase import skipped (${err.message}).`);
     }
@@ -627,6 +649,10 @@ export default function Algorithm() {
     }
 
     const sync = async () => {
+      const requestId = raceSyncRequestIdRef.current + 1;
+      raceSyncRequestIdRef.current = requestId;
+      const raceId = Number(selectedRace.id);
+
       setRaceSyncing(true);
       setError('');
       setStatus('Loading selected race...');
@@ -640,15 +666,30 @@ export default function Algorithm() {
       setJockeyInspectorOpen(false);
       setBetModalOpen(false);
       try {
-        await loadRaceDetail(selectedRace.id);
-        await runAnalysis(selectedRace.id, bankroll);
+        const loadedRace = await loadRaceDetail(raceId);
+        if (requestId !== raceSyncRequestIdRef.current || selectedRaceIdRef.current !== raceId) {
+          return;
+        }
+
+        const nextAnalysis = await runAnalysis(raceId, bankroll);
+        if (requestId !== raceSyncRequestIdRef.current || selectedRaceIdRef.current !== raceId) {
+          return;
+        }
+
+        setRace(loadedRace);
+        setAnalysis(nextAnalysis);
         setStatus('Race loaded.');
       } catch (err) {
+        if (requestId !== raceSyncRequestIdRef.current || selectedRaceIdRef.current !== raceId) {
+          return;
+        }
         setError(err.message);
         setAnalysis(null);
         setStatus('Failed to load selected race.');
       } finally {
-        setRaceSyncing(false);
+        if (requestId === raceSyncRequestIdRef.current) {
+          setRaceSyncing(false);
+        }
       }
     };
 
@@ -763,11 +804,7 @@ export default function Algorithm() {
   }, [modalOpen, betModalOpen, inspectorOpen, jockeyInspectorOpen]);
 
   useEffect(() => {
-    if (!race?.id) {
-      return;
-    }
-
-    if (marketPrimedRaceIdsRef.current.has(race.id)) {
+    if (!selectedRace?.id || raceSyncing || !race) {
       return;
     }
 
@@ -777,19 +814,21 @@ export default function Algorithm() {
     if (!hasRaceConfig && !hasBrisnetConfig) {
       setBrisnetIntel(null);
       setStatus('This race has no live market or BRISNET source config.');
-      marketPrimedRaceIdsRef.current.add(race.id);
       return;
     }
 
-    marketPrimedRaceIdsRef.current.add(race.id);
     refreshMarket();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [race?.id]);
+  }, [selectedRace?.id, raceSyncing, race?.race_config, race?.brisnet_config]);
 
   const refreshMarket = async () => {
     if (!selectedRace || refreshingMarket || raceSyncing) {
       return;
     }
+
+    const requestId = marketRefreshRequestIdRef.current + 1;
+    marketRefreshRequestIdRef.current = requestId;
+    const raceId = Number(selectedRace.id);
 
     setLastRefreshAttemptAt(new Date().toISOString());
     if (autoRefresh) {
@@ -800,9 +839,14 @@ export default function Algorithm() {
     setStatus('Refreshing live odds and BRISNET signals...');
 
     try {
-      const payload = await api.refreshRaceMarket(selectedRace.id, bankroll);
-      await loadRaceDetail(selectedRace.id);
-      setAnalysis(payload.analysis);
+      const payload = await api.refreshRaceMarket(raceId, bankroll);
+      const loadedRace = await loadRaceDetail(raceId);
+      if (requestId !== marketRefreshRequestIdRef.current || selectedRaceIdRef.current !== raceId) {
+        return;
+      }
+
+      setRace(loadedRace);
+      setAnalysis(payload.analysis ?? null);
       setBrisnetIntel(payload.market?.brisnet ?? null);
       setScratchesIntel(payload.market?.scratches ?? null);
       setLastLiveUpdateAt(payload.fetchedAt || new Date().toISOString());
@@ -823,10 +867,15 @@ export default function Algorithm() {
         ).toLocaleTimeString()}.${warningText}`
       );
     } catch (err) {
+      if (requestId !== marketRefreshRequestIdRef.current || selectedRaceIdRef.current !== raceId) {
+        return;
+      }
       setError(err.message);
       setStatus('Refresh failed.');
     } finally {
-      setRefreshingMarket(false);
+      if (requestId === marketRefreshRequestIdRef.current) {
+        setRefreshingMarket(false);
+      }
     }
   };
 
@@ -859,7 +908,12 @@ export default function Algorithm() {
 
     try {
       setError('');
-      await runAnalysis(selectedRace.id, bankroll);
+      const raceId = Number(selectedRace.id);
+      const nextAnalysis = await runAnalysis(raceId, bankroll);
+      if (selectedRaceIdRef.current !== raceId) {
+        return;
+      }
+      setAnalysis(nextAnalysis);
       setStatus('Analysis recalculated.');
     } catch (err) {
       setError(err.message);

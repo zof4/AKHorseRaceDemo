@@ -4,6 +4,12 @@ const DEFAULT_HEADERS = {
   accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 };
 
+const SCRATCHES_CACHE_TTL_MS = Math.max(0, Number(process.env.EQUIBASE_SCRATCHES_CACHE_MS ?? 90_000));
+const SCRATCHES_FAILURE_CACHE_TTL_MS = Math.max(0, Number(process.env.EQUIBASE_SCRATCHES_FAILURE_CACHE_MS ?? 30_000));
+const scratchesCacheByTrack = new Map();
+
+const cloneJson = (value) => JSON.parse(JSON.stringify(value));
+
 const collapseWhitespace = (text) => text.replace(/\s+/g, ' ').trim();
 
 const decodeHtmlEntities = (text) =>
@@ -360,6 +366,21 @@ export const getEquibaseScratches = async (trackCode = 'OP') => {
   const normalizedTrackCode = String(trackCode || 'OP')
     .trim()
     .toUpperCase();
+  const cacheKey = normalizedTrackCode;
+  const cached = scratchesCacheByTrack.get(cacheKey);
+  const now = Date.now();
+
+  if (cached && cached.expiresAt > now) {
+    const payload = cloneJson(cached.payload);
+    payload.diagnostics = payload.diagnostics ?? {};
+    payload.diagnostics.cache = {
+      hit: true,
+      cachedAt: new Date(cached.cachedAt).toISOString(),
+      expiresAt: new Date(cached.expiresAt).toISOString()
+    };
+    return payload;
+  }
+
   const url = `https://mobile.equibase.com/html/scratches${normalizedTrackCode}.html`;
   const response = await fetch(url, { headers: DEFAULT_HEADERS });
 
@@ -372,12 +393,25 @@ export const getEquibaseScratches = async (trackCode = 'OP') => {
       status: response.status,
       ok: response.ok,
       updatedLine: null,
-      preview: null
+      preview: null,
+      cache: {
+        hit: false,
+        cachedAt: null,
+        expiresAt: null
+      }
     }
   };
 
   if (!response.ok) {
     result.diagnostics.preview = await summarizeHtmlPreview(response);
+    const expiresAt = Date.now() + SCRATCHES_FAILURE_CACHE_TTL_MS;
+    scratchesCacheByTrack.set(cacheKey, {
+      cachedAt: Date.now(),
+      expiresAt,
+      payload: cloneJson(result)
+    });
+    result.diagnostics.cache.cachedAt = new Date(now).toISOString();
+    result.diagnostics.cache.expiresAt = new Date(expiresAt).toISOString();
     return result;
   }
 
@@ -417,6 +451,15 @@ export const getEquibaseScratches = async (trackCode = 'OP') => {
   for (const [raceNumber, names] of Object.entries(result.scratchesByRace)) {
     result.scratchesByRace[raceNumber] = [...new Set(names)];
   }
+
+  const expiresAt = Date.now() + SCRATCHES_CACHE_TTL_MS;
+  scratchesCacheByTrack.set(cacheKey, {
+    cachedAt: Date.now(),
+    expiresAt,
+    payload: cloneJson(result)
+  });
+  result.diagnostics.cache.cachedAt = new Date(now).toISOString();
+  result.diagnostics.cache.expiresAt = new Date(expiresAt).toISOString();
 
   return result;
 };
