@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Horse Race Algorithm Systems</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <p class="eyebrow">HorseRace Demo</p>
+      <h1>Algorithm Systems</h1>
+      <p class="subhead">
+        Race-modeling workbench for top-5 tickets, undercover winner detection, and
+        mirrored counter-bets.
+      </p>
+    </header>
+
+    <main>
+      <section class="panel warning-panel" aria-labelledby="date-clarity">
+        <h2 id="date-clarity">Date clarity</h2>
+        <p>
+          As of <strong>Thursday, March 5, 2026 (America/Chicago)</strong>, this proposal is focused on
+          <strong>Oaklawn Park Race 6 on Friday, March 6, 2026</strong> (Allowance, 1 1/16 miles).
+        </p>
+        <p>
+          This is intentionally not the Arkansas Derby. The target is the exact March 6 race card.
+        </p>
+      </section>
+
+      <section id="algorithm-systems" class="panel" aria-labelledby="walkthrough-title">
+        <h2 id="walkthrough-title">Algorithm walkthrough (before implementation)</h2>
+        <ol class="walkthrough">
+          <li>
+            Normalize each horse on core factors (speed, form, class, pace fit, distance fit,
+            connections, consistency, volatility, late kick, trend).
+          </li>
+          <li>
+            Build a base score from weighted performance factors, then subtract a risk penalty for
+            volatility.
+          </li>
+          <li>
+            Convert base scores into model win probabilities and compare them to implied probabilities
+            from projected odds.
+          </li>
+          <li>
+            Add a value adjustment so overpriced horses can rise and overbet horses can fall.
+          </li>
+          <li>
+            Rank the field and auto-build five tickets, plus an undercover winner outside top-tier
+            bets.
+          </li>
+          <li>
+            Generate a mirrored opposition slip so you can bet against the model using an explicit
+            counter-position.
+          </li>
+        </ol>
+      </section>
+
+      <section class="panel" aria-labelledby="workbench-title">
+        <div class="panel-header">
+          <h2 id="workbench-title">Race workbench</h2>
+          <div class="controls">
+            <label>
+              Bankroll ($)
+              <input id="bankroll-input" type="number" min="10" step="10" value="100" />
+            </label>
+            <button id="add-horse-btn" type="button">Add Horse</button>
+            <button id="recalc-btn" type="button">Recalculate</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Horse</th>
+                <th>Odds</th>
+                <th>Speed</th>
+                <th>Form</th>
+                <th>Class</th>
+                <th>Pace</th>
+                <th>Distance</th>
+                <th>Conn.</th>
+                <th>Consist.</th>
+                <th>Vol.</th>
+                <th>Late</th>
+                <th>Trend</th>
+              </tr>
+            </thead>
+            <tbody id="horse-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel results-grid" aria-labelledby="results-title">
+        <h2 id="results-title">Model output</h2>
+        <article>
+          <h3>Top five tickets</h3>
+          <div id="top-bets"></div>
+        </article>
+        <article>
+          <h3>Undercover winner</h3>
+          <div id="undercover-winner"></div>
+        </article>
+        <article>
+          <h3>Algorithm slip</h3>
+          <div id="algo-slip"></div>
+        </article>
+        <article>
+          <h3>Opposition slip (bet against model)</h3>
+          <div id="counter-slip"></div>
+        </article>
+      </section>
+
+      <section class="panel" aria-labelledby="arkansas-title">
+        <h2 id="arkansas-title">March 6 race proposal (Oaklawn Race 6)</h2>
+        <p class="muted">
+          Suggestions are derived from March 6 race-card data plus horse history snapshots.
+        </p>
+        <div id="tier-suggestions" class="tier-grid"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="source-title">
+        <h2 id="source-title">Sources used</h2>
+        <ul id="source-list" class="source-list"></ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Educational analytics only. Wager responsibly. If gambling is a problem, call 1-800-GAMBLER.
+      </p>
+    </footer>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
