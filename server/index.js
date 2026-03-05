@@ -11,6 +11,7 @@ import { createUsersRouter } from './routes/users.js';
 import { createRacesRouter } from './routes/races.js';
 import { createAlgorithmRouter } from './routes/algorithm.js';
 import { createBetsRouter } from './routes/bets.js';
+import { createJockeysRouter } from './routes/jockeys.js';
 import { registerSocketHandlers } from './socket/handler.js';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/users', createUsersRouter(io));
 app.use('/api/races', createRacesRouter(io));
 app.use('/api/algorithm', createAlgorithmRouter());
+app.use('/api/jockeys', createJockeysRouter());
 app.use('/api', createBetsRouter(io));
 
 if (hasClientBuild) {

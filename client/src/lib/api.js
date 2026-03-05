@@ -127,6 +127,16 @@ export const api = {
     return toJson(response);
   },
 
+  getJockeyProfile: async (name, { force = false } = {}) => {
+    const query = new URLSearchParams();
+    query.set('name', String(name ?? '').trim());
+    if (force) {
+      query.set('force', '1');
+    }
+    const response = await fetch(`/api/jockeys/profile?${query.toString()}`);
+    return toJson(response);
+  },
+
   refreshRaceMarket: async (raceId, bankroll) => {
     const response = await fetch(`/api/algorithm/race/${raceId}/refresh-market`, {
       method: 'POST',

@@ -113,6 +113,7 @@ const tierToneClasses = {
 
 const STORAGE_KEYS = {
   lastRaceId: 'hrd:algorithm:lastRaceId',
+  lastRaceExternalId: 'hrd:algorithm:lastRaceExternalId',
   dayMode: 'hrd:algorithm:dayMode'
 };
 
@@ -129,6 +130,15 @@ const loadStoredRaceId = () => {
   try {
     const parsed = Number(window.localStorage.getItem(STORAGE_KEYS.lastRaceId));
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const loadStoredRaceExternalId = () => {
+  try {
+    const value = String(window.localStorage.getItem(STORAGE_KEYS.lastRaceExternalId) ?? '').trim();
+    return value || null;
   } catch {
     return null;
   }
@@ -187,12 +197,16 @@ export default function Algorithm() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [selectedJockeyName, setSelectedJockeyName] = useState('');
   const [jockeyInspectorOpen, setJockeyInspectorOpen] = useState(false);
+  const [jockeyProfilesByName, setJockeyProfilesByName] = useState({});
+  const [jockeyProfileLoadingKey, setJockeyProfileLoadingKey] = useState('');
+  const [jockeyProfileError, setJockeyProfileError] = useState('');
   const [betModalOpen, setBetModalOpen] = useState(false);
   const [betDraft, setBetDraft] = useState(null);
   const [presetHistoryByExternalRaceId, setPresetHistoryByExternalRaceId] = useState({});
   const marketPrimedRaceIdsRef = useRef(new Set());
 
   const selectedRaceId = Number(searchParams.get('raceId') || 0);
+  const selectedRaceExternalId = String(searchParams.get('raceExternalId') || '').trim();
 
   const todayKey = useMemo(() => {
     const now = new Date();
@@ -212,10 +226,35 @@ export default function Algorithm() {
     return matches.length ? matches : races;
   }, [races, dayMode, todayKey, tomorrowKey]);
 
-  const selectedRace = useMemo(
-    () => filteredRaces.find((entry) => entry.id === selectedRaceId) ?? filteredRaces[0] ?? null,
-    [filteredRaces, selectedRaceId]
-  );
+  const selectedRace = useMemo(() => {
+    const byIdInFiltered = filteredRaces.find((entry) => entry.id === selectedRaceId);
+    if (byIdInFiltered) {
+      return byIdInFiltered;
+    }
+
+    if (selectedRaceExternalId) {
+      const byExternalInFiltered = filteredRaces.find(
+        (entry) => String(entry.external_id ?? '') === selectedRaceExternalId
+      );
+      if (byExternalInFiltered) {
+        return byExternalInFiltered;
+      }
+    }
+
+    const byIdInAll = races.find((entry) => entry.id === selectedRaceId);
+    if (byIdInAll) {
+      return byIdInAll;
+    }
+
+    if (selectedRaceExternalId) {
+      const byExternalInAll = races.find((entry) => String(entry.external_id ?? '') === selectedRaceExternalId);
+      if (byExternalInAll) {
+        return byExternalInAll;
+      }
+    }
+
+    return filteredRaces[0] ?? races[0] ?? null;
+  }, [filteredRaces, races, selectedRaceId, selectedRaceExternalId]);
 
   const totalHorseCount = Array.isArray(race?.horses) ? race.horses.length : 0;
   const activeHorseCount = Array.isArray(race?.horses)
@@ -327,6 +366,10 @@ export default function Algorithm() {
       jockeyAnalysis[0]
     );
   }, [jockeyAnalysis, selectedJockeyName]);
+
+  const selectedJockeyKey = normalizeText(selectedJockey?.jockey);
+  const selectedJockeyProfile = selectedJockeyKey ? jockeyProfilesByName[selectedJockeyKey] ?? null : null;
+  const isLoadingSelectedJockeyProfile = Boolean(selectedJockeyKey) && jockeyProfileLoadingKey === selectedJockeyKey;
 
   const selectedJockeyRides = useMemo(() => {
     if (!race || !analysis?.ranked || !selectedJockey) {
@@ -487,7 +530,41 @@ export default function Algorithm() {
       return;
     }
 
-    const raceFromQuery = races.find((entry) => entry.id === selectedRaceId);
+    const raceFromQuery =
+      races.find((entry) => entry.id === selectedRaceId) ??
+      (selectedRaceExternalId
+        ? races.find((entry) => String(entry.external_id ?? '') === selectedRaceExternalId)
+        : null);
+
+    const syncSearchParamsToRace = (raceRow) => {
+      if (!raceRow) {
+        return;
+      }
+
+      const raceIdToken = String(raceRow.id);
+      const raceExternalToken = String(raceRow.external_id ?? '').trim();
+      const queryRaceId = selectedRaceId > 0 ? String(selectedRaceId) : '';
+      const queryRaceExternal = selectedRaceExternalId;
+
+      if (queryRaceId === raceIdToken && queryRaceExternal === raceExternalToken) {
+        return;
+      }
+
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set('raceId', raceIdToken);
+          if (raceExternalToken) {
+            next.set('raceExternalId', raceExternalToken);
+          } else {
+            next.delete('raceExternalId');
+          }
+          return next;
+        },
+        { replace: true }
+      );
+    };
+
     if (raceFromQuery) {
       const raceDateKey = extractRaceDateKey(raceFromQuery);
       if (raceDateKey === todayKey && dayMode !== 'today') {
@@ -495,11 +572,17 @@ export default function Algorithm() {
       } else if (raceDateKey === tomorrowKey && dayMode !== 'tomorrow') {
         setDayMode('tomorrow');
       }
+      syncSearchParamsToRace(raceFromQuery);
       return;
     }
 
+    const restoredRaceExternalId = loadStoredRaceExternalId();
     const restoredRaceId = loadStoredRaceId();
-    const restoredRace = restoredRaceId ? races.find((entry) => entry.id === restoredRaceId) : null;
+    const restoredRace =
+      (restoredRaceExternalId
+        ? races.find((entry) => String(entry.external_id ?? '') === restoredRaceExternalId)
+        : null) ??
+      (restoredRaceId ? races.find((entry) => entry.id === restoredRaceId) : null);
     const fallback = restoredRace ?? filteredRaces[0] ?? races[0] ?? null;
     if (!fallback) {
       return;
@@ -512,14 +595,8 @@ export default function Algorithm() {
       setDayMode('tomorrow');
     }
 
-    if (selectedRaceId !== Number(fallback.id)) {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        next.set('raceId', String(fallback.id));
-        return next;
-      });
-    }
-  }, [races, filteredRaces, selectedRaceId, setSearchParams, dayMode, todayKey, tomorrowKey]);
+    syncSearchParamsToRace(fallback);
+  }, [races, filteredRaces, selectedRaceId, selectedRaceExternalId, setSearchParams, dayMode, todayKey, tomorrowKey]);
 
   useEffect(() => {
     if (!selectedRace?.id) {
@@ -527,10 +604,14 @@ export default function Algorithm() {
     }
     try {
       window.localStorage.setItem(STORAGE_KEYS.lastRaceId, String(selectedRace.id));
+      const externalToken = String(selectedRace.external_id ?? '').trim();
+      if (externalToken) {
+        window.localStorage.setItem(STORAGE_KEYS.lastRaceExternalId, externalToken);
+      }
     } catch {
       // Ignore storage failures.
     }
-  }, [selectedRace?.id]);
+  }, [selectedRace?.id, selectedRace?.external_id]);
 
   useEffect(() => {
     try {
@@ -751,9 +832,16 @@ export default function Algorithm() {
 
   const onRaceChange = (event) => {
     const raceId = Number(event.target.value);
+    const raceRow = filteredRaces.find((entry) => entry.id === raceId) ?? races.find((entry) => entry.id === raceId) ?? null;
+    const externalToken = String(raceRow?.external_id ?? '').trim();
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set('raceId', String(raceId));
+      if (externalToken) {
+        next.set('raceExternalId', externalToken);
+      } else {
+        next.delete('raceExternalId');
+      }
       return next;
     });
     setBrisnetIntel(null);
@@ -785,7 +873,34 @@ export default function Algorithm() {
 
   const openInspectorForJockey = (jockeyName) => {
     setSelectedJockeyName(jockeyName);
+    setJockeyProfileError('');
     setJockeyInspectorOpen(true);
+  };
+
+  const requestJockeyProfile = async (jockeyName, { force = false } = {}) => {
+    const cleanName = String(jockeyName ?? '').trim();
+    if (!cleanName) {
+      return;
+    }
+
+    const key = normalizeText(cleanName);
+    if (!force && jockeyProfilesByName[key]) {
+      return;
+    }
+
+    setJockeyProfileError('');
+    setJockeyProfileLoadingKey(key);
+    try {
+      const { profile } = await api.getJockeyProfile(cleanName, { force });
+      setJockeyProfilesByName((prev) => ({
+        ...prev,
+        [key]: profile
+      }));
+    } catch (err) {
+      setJockeyProfileError(err.message);
+    } finally {
+      setJockeyProfileLoadingKey((prev) => (prev === key ? '' : prev));
+    }
   };
 
   const openBetModal = (draft) => {
@@ -829,6 +944,14 @@ export default function Algorithm() {
     setSelectedHorseName(horseName);
     setInspectorOpen(true);
   };
+
+  useEffect(() => {
+    if (!jockeyInspectorOpen || !selectedJockey?.jockey) {
+      return;
+    }
+    requestJockeyProfile(selectedJockey.jockey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jockeyInspectorOpen, selectedJockey?.jockey]);
 
   const inspectorModal =
     inspectorOpen && selectedRunner
@@ -1047,9 +1170,19 @@ export default function Algorithm() {
                     Ride-by-ride model impact for this race card. Tap a horse to open the horse inspector.
                   </p>
                 </div>
-                <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => setJockeyInspectorOpen(false)}>
-                  Close
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    className="btn-secondary px-3 py-1.5 text-xs"
+                    type="button"
+                    onClick={() => requestJockeyProfile(selectedJockey.jockey, { force: true })}
+                    disabled={isLoadingSelectedJockeyProfile}
+                  >
+                    {isLoadingSelectedJockeyProfile ? 'Refreshing...' : 'Refresh Profile'}
+                  </button>
+                  <button className="btn-secondary px-3 py-1.5 text-xs" type="button" onClick={() => setJockeyInspectorOpen(false)}>
+                    Close
+                  </button>
+                </div>
               </header>
 
               <div
@@ -1075,6 +1208,73 @@ export default function Algorithm() {
                     <p className="tile-title">Top Mount</p>
                     <p className="tile-value text-sm">{selectedJockey.topHorse || 'N/A'}</p>
                   </div>
+                </div>
+
+                <div className="mt-3 tile">
+                  <p className="text-sm font-semibold text-stone-900">Jockey History Snapshot (Local Data)</p>
+                  <p className="mt-1 text-xs text-stone-600">
+                    Loaded on-demand and cached for 5 minutes. Not part of auto market refresh.
+                  </p>
+                  {isLoadingSelectedJockeyProfile ? <p className="mt-2 text-xs text-stone-600">Loading jockey profile...</p> : null}
+                  {jockeyProfileError ? <p className="mt-2 text-xs text-rose-700">{jockeyProfileError}</p> : null}
+                  {selectedJockeyProfile ? (
+                    <div className="mt-2 grid gap-3">
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-2">
+                          <p className="tile-title">Local Starts</p>
+                          <p className="tile-value text-base">{selectedJockeyProfile.summary?.starts ?? 0}</p>
+                        </div>
+                        <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-2">
+                          <p className="tile-title">Races Tracked</p>
+                          <p className="tile-value text-base">{selectedJockeyProfile.summary?.races ?? 0}</p>
+                        </div>
+                        <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-2">
+                          <p className="tile-title">Win Rate</p>
+                          <p className="tile-value text-base">{asPercent(selectedJockeyProfile.summary?.winRate ?? 0)}</p>
+                        </div>
+                        <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-2">
+                          <p className="tile-title">ITM Rate</p>
+                          <p className="tile-value text-base">{asPercent(selectedJockeyProfile.summary?.itmRate ?? 0)}</p>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                          <p className="text-xs font-semibold text-stone-800">Top Trainer Partnerships</p>
+                          {(selectedJockeyProfile.topTrainerPartnerships || []).length ? (
+                            <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                              {selectedJockeyProfile.topTrainerPartnerships.map((entry) => (
+                                <li key={`${selectedJockey.jockey}-${entry.trainer}`} className="flex items-center justify-between gap-2">
+                                  <span>{entry.trainer}</span>
+                                  <strong>{entry.starts} starts</strong>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-2 text-xs text-stone-600">No trainer partnership history stored yet.</p>
+                          )}
+                        </div>
+
+                        <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                          <p className="text-xs font-semibold text-stone-800">Recent Mounts Across Imported Races</p>
+                          {(selectedJockeyProfile.recentMounts || []).length ? (
+                            <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                              {selectedJockeyProfile.recentMounts.slice(0, 6).map((mount) => (
+                                <li key={`mount-${mount.race_id}-${mount.horse_id}`} className="flex items-start justify-between gap-2">
+                                  <span>
+                                    {mount.horse_name} • {mount.track} R{mount.race_number}
+                                  </span>
+                                  <strong>{mount.odds || '-'}</strong>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-2 text-xs text-stone-600">No historical mounts stored yet.</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="mt-3 tile">
