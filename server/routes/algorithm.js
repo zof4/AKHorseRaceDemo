@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db, { jsonParseSafe } from '../db/connection.js';
-import { getBrisnetSignals, getLiveOdds } from '../services/liveOddsProviders.js';
+import { getBrisnetSignals, getEquibaseScratches, getLiveOdds } from '../services/liveOddsProviders.js';
 import { runBaselineAnalysis } from '../services/baselineAlgorithm.js';
 
 const NUMERIC_FIELDS = [
@@ -18,7 +18,7 @@ const NUMERIC_FIELDS = [
 ];
 
 const getRaceStmt = db.prepare(
-  `SELECT id, name, race_config_json, brisnet_config_json
+  `SELECT id, name, track, race_number, race_config_json, brisnet_config_json
    FROM races
    WHERE id = ?`
 );
@@ -53,6 +53,12 @@ const updateHorseOddsStmt = db.prepare(
 const updateHorseSignalStmt = db.prepare(
   `UPDATE horses
    SET brisnet_signal = ?
+   WHERE race_id = ? AND lower(name) = lower(?)`
+);
+
+const updateHorseScratchedByNameStmt = db.prepare(
+  `UPDATE horses
+   SET scratched = 1
    WHERE race_id = ? AND lower(name) = lower(?)`
 );
 
@@ -218,13 +224,15 @@ export const createAlgorithmRouter = () => {
 
     const updated = {
       odds: 0,
-      signals: 0
+      signals: 0,
+      scratches: 0
     };
     const warnings = [];
 
     try {
       let oddsPayload = null;
       let brisnetPayload = null;
+      let scratchesPayload = null;
 
       if (hasLiveOddsConfig) {
         try {
@@ -266,7 +274,44 @@ export const createAlgorithmRouter = () => {
         });
       }
 
-      const analysis = analyzeRaceById(raceId, Number(req.body?.bankroll));
+      try {
+        const raceTrack = String(race.track ?? '').toLowerCase();
+        const raceNumber = Number(race.race_number ?? raceConfig?.raceNumber ?? 0);
+        const trackCode = raceTrack.includes('oaklawn') ? 'OP' : String(raceConfig?.trackCode ?? 'OP');
+
+        if (Number.isInteger(raceNumber) && raceNumber > 0) {
+          scratchesPayload = await getEquibaseScratches(trackCode);
+          const scratchesForRace = Array.isArray(scratchesPayload.scratchesByRace?.[raceNumber])
+            ? scratchesPayload.scratchesByRace[raceNumber]
+            : [];
+
+          for (const horseName of scratchesForRace) {
+            const result = updateHorseScratchedByNameStmt.run(raceId, horseName);
+            updated.scratches += result.changes;
+          }
+        } else {
+          warnings.push({
+            provider: 'Equibase',
+            message: 'Skipped scratches sync: race number unavailable.'
+          });
+        }
+      } catch (error) {
+        warnings.push({
+          provider: 'Equibase',
+          message: error instanceof Error ? error.message : 'Unknown scratches sync error'
+        });
+      }
+
+      let analysis = null;
+      try {
+        analysis = analyzeRaceById(raceId, Number(req.body?.bankroll));
+      } catch (error) {
+        warnings.push({
+          provider: 'Algorithm',
+          message: error instanceof Error ? error.message : 'Unable to analyze current field'
+        });
+      }
+
       return res.json({
         raceId,
         updated,
@@ -292,11 +337,23 @@ export const createAlgorithmRouter = () => {
                 signals: brisnetPayload.signals,
                 diagnostics: brisnetPayload.diagnostics
               }
+            : null,
+          scratches: scratchesPayload
+            ? {
+                provider: scratchesPayload.provider,
+                fetchedAt: scratchesPayload.fetchedAt,
+                url: scratchesPayload.url,
+                diagnostics: scratchesPayload.diagnostics,
+                raceNumber: Number(race.race_number ?? raceConfig?.raceNumber ?? 0),
+                scratchesForRace:
+                  scratchesPayload.scratchesByRace?.[Number(race.race_number ?? raceConfig?.raceNumber ?? 0)] ?? []
+              }
             : null
         },
         providers: {
           odds: hasLiveOddsConfig ? 'BettingNews' : null,
-          brisnet: hasBrisnetConfig ? 'BRISNET' : null
+          brisnet: hasBrisnetConfig ? 'BRISNET' : null,
+          scratches: 'Equibase'
         }
       });
     } catch (error) {

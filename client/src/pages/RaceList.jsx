@@ -42,11 +42,20 @@ export default function RaceList() {
     if (presetIds.length) {
       await api.importRacePresets({ presetIds });
       setImportStatus(`Auto-imported ${presetIds.length} presets for today/tomorrow.`);
-      return;
+    } else {
+      await api.importRacePresets({});
+      setImportStatus('Auto-imported default presets.');
     }
 
-    await api.importRacePresets({});
-    setImportStatus('Auto-imported default presets.');
+    try {
+      const dates = [...targetKeys];
+      const result = await api.importEquibaseRaces({ trackCode: 'OP', dates });
+      if (Array.isArray(result.imported) && result.imported.length) {
+        setImportStatus((prev) => `${prev} Added ${result.imported.length} live Equibase races.`);
+      }
+    } catch (err) {
+      setImportStatus((prev) => `${prev} Live Equibase import skipped (${err.message}).`);
+    }
   };
 
   const load = async () => {
@@ -87,7 +96,7 @@ export default function RaceList() {
           <p className="kicker">Race Cards</p>
           <h2 className="page-title mt-1">Races</h2>
           <p className="text-sm text-stone-600">
-            Today/tomorrow presets are auto-imported on page load.
+            Today/tomorrow cards auto-import from presets plus live Equibase entries.
           </p>
           {importStatus ? <p className="mt-1 text-xs text-emerald-700">{importStatus}</p> : null}
         </div>

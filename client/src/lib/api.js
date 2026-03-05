@@ -66,6 +66,15 @@ export const api = {
     return toJson(response);
   },
 
+  importEquibaseRaces: async (payload) => {
+    const response = await fetch('/api/races/import/equibase', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return toJson(response);
+  },
+
   getPools: async (raceId) => {
     const response = await fetch(`/api/pools/${raceId}`);
     return toJson(response);

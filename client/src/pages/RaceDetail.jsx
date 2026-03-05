@@ -120,6 +120,11 @@ export default function RaceDetail() {
             <p className="tile-value text-base">{race.horses.length}</p>
           </div>
         </div>
+        {race.horses.some((horse) => Number(horse.scratched)) ? (
+          <p className="mt-2 text-xs text-rose-700">
+            Scratched: {race.horses.filter((horse) => Number(horse.scratched)).map((horse) => horse.name).join(', ')}
+          </p>
+        ) : null}
         <div className="mt-3 flex flex-wrap gap-2">
           <Link className="btn-primary" to={`/races/${race.id}/bet`}>
             Place Bet
@@ -137,10 +142,13 @@ export default function RaceDetail() {
         <h3 className="text-base font-semibold">Horses</h3>
         <div className="mt-3 grid gap-2">
           {race.horses.map((horse) => (
-            <div key={horse.id} className="tile">
+            <div key={horse.id} className={`tile ${Number(horse.scratched) ? 'border-rose-200 bg-rose-50' : ''}`}>
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-sm font-semibold">{horse.post_position || '-'} - {horse.name}</p>
+                  <p className="text-sm font-semibold">
+                    {horse.post_position || '-'} - {horse.name}
+                    {Number(horse.scratched) ? ' (SCR)' : ''}
+                  </p>
                   <p className="text-xs text-stone-600">Odds {horse.morning_line_odds || '-'} • BRIS {Number(horse.brisnet_signal ?? 0).toFixed(0)}</p>
                 </div>
                 <p className="rounded-full bg-stone-100 px-2 py-1 text-[11px] font-semibold text-stone-700">

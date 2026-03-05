@@ -57,6 +57,14 @@ const parseRaceHintsFromUrl = (value) => {
   return [...new Set(match[1].split('-').map((entry) => Number(entry)).filter((entry) => Number.isInteger(entry) && entry > 0))];
 };
 
+const parseDateFromUpdatedLine = (line) => {
+  const value = String(line ?? '').trim();
+  if (!value) {
+    return null;
+  }
+  return value;
+};
+
 const buildTrackNeedles = (trackName) => {
   const value = String(trackName ?? '').trim();
   if (!value) {
@@ -346,4 +354,69 @@ export const getLiveOdds = async (raceConfig, horseNames) => {
 
   const uniqueHorseNames = [...new Set(horseNames.map((name) => String(name).trim()).filter(Boolean))];
   return fetchBettingNewsOdds(raceConfig, uniqueHorseNames);
+};
+
+export const getEquibaseScratches = async (trackCode = 'OP') => {
+  const normalizedTrackCode = String(trackCode || 'OP')
+    .trim()
+    .toUpperCase();
+  const url = `https://mobile.equibase.com/html/scratches${normalizedTrackCode}.html`;
+  const response = await fetch(url, { headers: DEFAULT_HEADERS });
+
+  const result = {
+    provider: 'Equibase',
+    url,
+    fetchedAt: new Date().toISOString(),
+    scratchesByRace: {},
+    diagnostics: {
+      status: response.status,
+      ok: response.ok,
+      updatedLine: null,
+      preview: null
+    }
+  };
+
+  if (!response.ok) {
+    result.diagnostics.preview = await summarizeHtmlPreview(response);
+    return result;
+  }
+
+  const html = await response.text();
+  const lines = stripHtmlToLines(html);
+  const updatedLine = lines.find((line) => /^Updated:/i.test(line));
+  result.diagnostics.updatedLine = parseDateFromUpdatedLine(updatedLine);
+
+  let activeRace = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const raceMatch = line.match(/^Race\s+(\d+)/i);
+    if (raceMatch) {
+      activeRace = Number(raceMatch[1]);
+      if (!result.scratchesByRace[activeRace]) {
+        result.scratchesByRace[activeRace] = [];
+      }
+      continue;
+    }
+
+    if (!activeRace) {
+      continue;
+    }
+
+    const candidateMatch = line.match(/^#\s*\d+\s+(.+?):$/);
+    if (!candidateMatch) {
+      continue;
+    }
+
+    const horseName = candidateMatch[1].trim();
+    const nextWindow = lines.slice(index + 1, index + 5).join(' ');
+    if (/Scratched/i.test(nextWindow)) {
+      result.scratchesByRace[activeRace].push(horseName);
+    }
+  }
+
+  for (const [raceNumber, names] of Object.entries(result.scratchesByRace)) {
+    result.scratchesByRace[raceNumber] = [...new Set(names)];
+  }
+
+  return result;
 };

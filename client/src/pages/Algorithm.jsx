@@ -112,11 +112,12 @@ export default function Algorithm() {
   const [race, setRace] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [bankroll, setBankroll] = useState(100);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [dayMode, setDayMode] = useState('today');
   const [loading, setLoading] = useState(true);
   const [refreshingMarket, setRefreshingMarket] = useState(false);
   const [brisnetIntel, setBrisnetIntel] = useState(null);
+  const [scratchesIntel, setScratchesIntel] = useState(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('Waiting for first refresh.');
   const [selectedHorseName, setSelectedHorseName] = useState('');
@@ -189,6 +190,57 @@ export default function Algorithm() {
     const perRace = presetHistoryByExternalRaceId[String(race.external_id || '')];
     return perRace?.[normalizeHorseName(selectedRunner.name)] ?? null;
   }, [presetHistoryByExternalRaceId, race, selectedRunner]);
+
+  const jockeyAnalysis = useMemo(() => {
+    if (!race || !analysis?.ranked) {
+      return [];
+    }
+
+    const runnerByName = new Map(
+      analysis.ranked.map((runner) => [normalizeHorseName(runner.name), runner])
+    );
+
+    const grouped = new Map();
+    for (const horse of race.horses || []) {
+      if (Number(horse.scratched)) {
+        continue;
+      }
+
+      const jockeyName = horse.jockey || 'Unknown Jockey';
+      const runner = runnerByName.get(normalizeHorseName(horse.name));
+      if (!runner) {
+        continue;
+      }
+
+      if (!grouped.has(jockeyName)) {
+        grouped.set(jockeyName, {
+          jockey: jockeyName,
+          rides: 0,
+          modelProbabilityTotal: 0,
+          edgeTotal: 0,
+          topHorse: null,
+          topHorseScore: -Infinity
+        });
+      }
+
+      const row = grouped.get(jockeyName);
+      row.rides += 1;
+      row.modelProbabilityTotal += Number(runner.modelProbability || 0);
+      row.edgeTotal += Number(runner.valueEdge || 0);
+      if (Number(runner.score) > row.topHorseScore) {
+        row.topHorseScore = Number(runner.score);
+        row.topHorse = horse.name;
+      }
+    }
+
+    return [...grouped.values()]
+      .map((row) => ({
+        ...row,
+        avgModelProbability: row.rides ? row.modelProbabilityTotal / row.rides : 0,
+        avgEdge: row.rides ? row.edgeTotal / row.rides : 0
+      }))
+      .sort((left, right) => right.avgModelProbability - left.avgModelProbability);
+  }, [race, analysis]);
 
   const selectedContributionRows = useMemo(() => {
     if (!selectedRunner?.scoreBreakdown?.base?.components) {
@@ -277,10 +329,18 @@ export default function Algorithm() {
 
     if (presetIds.length) {
       await api.importRacePresets({ presetIds });
-      return;
+    } else {
+      await api.importRacePresets({});
     }
 
-    await api.importRacePresets({});
+    try {
+      await api.importEquibaseRaces({
+        trackCode: 'OP',
+        dates: [todayKey, tomorrowKey]
+      });
+    } catch (err) {
+      setStatus(`Preset import completed; live Equibase import skipped (${err.message}).`);
+    }
   };
 
   useEffect(() => {
@@ -351,7 +411,7 @@ export default function Algorithm() {
 
     const timer = setInterval(() => {
       refreshMarket();
-    }, 60000);
+    }, 15000);
 
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -456,6 +516,7 @@ export default function Algorithm() {
       await loadRaceDetail(selectedRace.id);
       setAnalysis(payload.analysis);
       setBrisnetIntel(payload.market?.brisnet ?? null);
+      setScratchesIntel(payload.market?.scratches ?? null);
       const warningText =
         Array.isArray(payload.warnings) && payload.warnings.length
           ? ` Warnings: ${payload.warnings.map((warning) => `${warning.provider}: ${warning.message}`).join(' | ')}`
@@ -481,6 +542,7 @@ export default function Algorithm() {
       return next;
     });
     setBrisnetIntel(null);
+    setScratchesIntel(null);
   };
 
   const onRecalculate = async () => {
@@ -747,8 +809,8 @@ export default function Algorithm() {
         <p className="kicker">Model Control</p>
         <h2 className="page-title mt-1">Algorithm Systems</h2>
         <p className="mt-1 text-sm text-stone-600">
-          Race presets auto-import for {todayKey} and {tomorrowKey}. Tap any horse tile to inspect exact math and
-          historical context.
+          Presets plus live Equibase cards auto-import for {todayKey} and {tomorrowKey}. Tap any horse tile to inspect
+          exact math and historical context.
         </p>
         <div className="mt-4 grid gap-3 sm:grid-cols-4">
           <div className="tile">
@@ -849,6 +911,7 @@ export default function Algorithm() {
         </div>
 
         <p className="mt-2 text-sm text-stone-600">{status}</p>
+        <p className="mt-1 text-xs text-stone-500">Live refresh runs every 15 seconds when auto refresh is enabled.</p>
         {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
       </article>
 
@@ -866,6 +929,17 @@ export default function Algorithm() {
           </div>
 
           <p className="mt-2 text-xs text-stone-500">Tap a horse to open a full-screen inspector.</p>
+          {Array.isArray(race.horses) && race.horses.some((horse) => Number(horse.scratched)) ? (
+            <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">
+              <p className="font-semibold">Scratched horses</p>
+              <p className="mt-1">
+                {race.horses
+                  .filter((horse) => Number(horse.scratched))
+                  .map((horse) => horse.name)
+                  .join(', ')}
+              </p>
+            </div>
+          ) : null}
           <div className="mt-3 grid gap-2">
             {rankedWithPosts.map((runner) => {
               const selected = normalizeHorseName(runner.name) === normalizeHorseName(selectedRunner?.name);
@@ -903,6 +977,49 @@ export default function Algorithm() {
           </div>
         </article>
       ) : null}
+
+      <article className="panel">
+        <h3 className="text-base font-semibold">Jockey Analysis</h3>
+        {jockeyAnalysis.length ? (
+          <div className="mt-3 grid gap-2">
+            {jockeyAnalysis.map((row) => (
+              <div key={row.jockey} className="tile">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-stone-900">{row.jockey}</p>
+                    <p className="text-xs text-stone-600">
+                      Rides: {row.rides} • Top mount: {row.topHorse || 'N/A'}
+                    </p>
+                  </div>
+                  <span
+                    className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                      Number(row.avgEdge) >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                    }`}
+                  >
+                    Avg edge {asPercent(row.avgEdge)}
+                  </span>
+                </div>
+                <div className="mt-2">
+                  <div className="mb-1 flex items-center justify-between text-[11px] text-stone-600">
+                    <span>Avg model win probability</span>
+                    <span>{asPercent(row.avgModelProbability)}</span>
+                  </div>
+                  <div className="meter-track">
+                    <div
+                      className="meter-fill"
+                      style={{ width: `${Math.max(4, Math.min(100, Number(row.avgModelProbability || 0) * 100))}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-stone-600">
+            No jockey data yet for this race import. Live Equibase import will populate jockey names where available.
+          </p>
+        )}
+      </article>
 
       <section className="grid gap-4 lg:grid-cols-2">
         <article className="panel">
@@ -1043,61 +1160,81 @@ export default function Algorithm() {
 
       <article className="panel">
         <h3 className="text-base font-semibold">Market Intelligence</h3>
-        {brisnetIntel ? (
+        {brisnetIntel || scratchesIntel ? (
           <div className="mt-2 grid gap-2 text-sm text-stone-700">
-            <p>
-              Spot Play:{' '}
-              {brisnetIntel.spotPlay
-                ? `${brisnetIntel.spotPlay.horseName} (Race ${brisnetIntel.spotPlay.raceNumber}, quoted ${brisnetIntel.spotPlay.quotedOdds})`
-                : 'No spot play matched this selected race.'}
-            </p>
-            <p>
-              Optix Matches:{' '}
-              {Array.isArray(brisnetIntel.optixSelections) && brisnetIntel.optixSelections.length
-                ? brisnetIntel.optixSelections.join(', ')
-                : 'None returned for this race.'}
-            </p>
-            <p>
-              Field match quality: spot-play match{' '}
-              {brisnetIntel.diagnostics?.matching?.spotPlayMatchedFieldHorse ? 'yes' : 'no'} • Optix matched{' '}
-              {Number(brisnetIntel.diagnostics?.matching?.optixMatchedFieldCount || 0)}
-            </p>
-            {Array.isArray(brisnetIntel.diagnostics?.matching?.optixUrlRaceHints) &&
-            brisnetIntel.diagnostics.matching.optixUrlRaceHints.length ? (
-              <p>
-                Optix URL race hints: {brisnetIntel.diagnostics.matching.optixUrlRaceHints.join(', ')}{' '}
-                {brisnetIntel.diagnostics.matching.optixUrlLooksMismatched ? '(mismatch with selected race)' : ''}
-              </p>
+            {brisnetIntel ? (
+              <>
+                <p>
+                  Spot Play:{' '}
+                  {brisnetIntel.spotPlay
+                    ? `${brisnetIntel.spotPlay.horseName} (Race ${brisnetIntel.spotPlay.raceNumber}, quoted ${brisnetIntel.spotPlay.quotedOdds})`
+                    : 'No spot play matched this selected race.'}
+                </p>
+                <p>
+                  Optix Matches:{' '}
+                  {Array.isArray(brisnetIntel.optixSelections) && brisnetIntel.optixSelections.length
+                    ? brisnetIntel.optixSelections.join(', ')
+                    : 'None returned for this race.'}
+                </p>
+                <p>
+                  Field match quality: spot-play match{' '}
+                  {brisnetIntel.diagnostics?.matching?.spotPlayMatchedFieldHorse ? 'yes' : 'no'} • Optix matched{' '}
+                  {Number(brisnetIntel.diagnostics?.matching?.optixMatchedFieldCount || 0)}
+                </p>
+                {Array.isArray(brisnetIntel.diagnostics?.matching?.optixUrlRaceHints) &&
+                brisnetIntel.diagnostics.matching.optixUrlRaceHints.length ? (
+                  <p>
+                    Optix URL race hints: {brisnetIntel.diagnostics.matching.optixUrlRaceHints.join(', ')}{' '}
+                    {brisnetIntel.diagnostics.matching.optixUrlLooksMismatched ? '(mismatch with selected race)' : ''}
+                  </p>
+                ) : null}
+                {Array.isArray(brisnetIntel.diagnostics?.matching?.unmatchedOptixSelections) &&
+                brisnetIntel.diagnostics.matching.unmatchedOptixSelections.length ? (
+                  <p>
+                    Unmatched Optix selections: {brisnetIntel.diagnostics.matching.unmatchedOptixSelections.join(', ')}
+                  </p>
+                ) : null}
+                <div className="rounded-xl border border-stone-200 bg-stone-50 p-2 text-xs text-stone-700">
+                  <p className="font-semibold">BRISNET diagnostics</p>
+                  <p>
+                    Spot Plays: {brisnetIntel.diagnostics?.requests?.spotPlays?.ok ? 'ok' : 'not ok'} (
+                    {brisnetIntel.diagnostics?.requests?.spotPlays?.status ?? 'n/a'})
+                  </p>
+                  {brisnetIntel.diagnostics?.requests?.spotPlays?.preview ? (
+                    <p>Spot preview: {brisnetIntel.diagnostics.requests.spotPlays.preview}</p>
+                  ) : null}
+                  <p>
+                    Optix: {brisnetIntel.diagnostics?.requests?.optix?.ok ? 'ok' : 'not ok'} (
+                    {brisnetIntel.diagnostics?.requests?.optix?.status ?? 'n/a'})
+                  </p>
+                  {brisnetIntel.diagnostics?.requests?.optix?.preview ? (
+                    <p>Optix preview: {brisnetIntel.diagnostics.requests.optix.preview}</p>
+                  ) : null}
+                </div>
+              </>
             ) : null}
-            {Array.isArray(brisnetIntel.diagnostics?.matching?.unmatchedOptixSelections) &&
-            brisnetIntel.diagnostics.matching.unmatchedOptixSelections.length ? (
-              <p>
-                Unmatched Optix selections: {brisnetIntel.diagnostics.matching.unmatchedOptixSelections.join(', ')}
-              </p>
+
+            {scratchesIntel ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">
+                <p className="font-semibold">Equibase scratches</p>
+                <p>
+                  Race {scratchesIntel.raceNumber || '-'} scratches:{' '}
+                  {Array.isArray(scratchesIntel.scratchesForRace) && scratchesIntel.scratchesForRace.length
+                    ? scratchesIntel.scratchesForRace.join(', ')
+                    : 'none listed'}
+                </p>
+                <p>
+                  Feed status: {scratchesIntel.diagnostics?.ok ? 'ok' : 'not ok'} (
+                  {scratchesIntel.diagnostics?.status ?? 'n/a'})
+                </p>
+                {scratchesIntel.diagnostics?.updatedLine ? <p>{scratchesIntel.diagnostics.updatedLine}</p> : null}
+                {scratchesIntel.diagnostics?.preview ? <p>Preview: {scratchesIntel.diagnostics.preview}</p> : null}
+              </div>
             ) : null}
-            <div className="rounded-xl border border-stone-200 bg-stone-50 p-2 text-xs text-stone-700">
-              <p className="font-semibold">Fetch diagnostics</p>
-              <p>
-                Spot Plays: {brisnetIntel.diagnostics?.requests?.spotPlays?.ok ? 'ok' : 'not ok'} (
-                {brisnetIntel.diagnostics?.requests?.spotPlays?.status ?? 'n/a'})
-              </p>
-              {brisnetIntel.diagnostics?.requests?.spotPlays?.preview ? (
-                <p>Spot preview: {brisnetIntel.diagnostics.requests.spotPlays.preview}</p>
-              ) : null}
-              <p>
-                Optix: {brisnetIntel.diagnostics?.requests?.optix?.ok ? 'ok' : 'not ok'} (
-                {brisnetIntel.diagnostics?.requests?.optix?.status ?? 'n/a'})
-              </p>
-              {brisnetIntel.diagnostics?.requests?.optix?.preview ? (
-                <p>Optix preview: {brisnetIntel.diagnostics.requests.optix.preview}</p>
-              ) : null}
-            </div>
           </div>
         ) : (
           <p className="mt-2 text-sm text-stone-600">
-            {race?.brisnet_config
-              ? 'Waiting on BRISNET payload. Use Refresh Market if you want to force an immediate update.'
-              : 'No BRISNET source configured for this race preset.'}
+            Waiting on live market payload. Use Refresh Market if you want to force an immediate update.
           </p>
         )}
       </article>

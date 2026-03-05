@@ -7,6 +7,7 @@ import {
   listRacePresets,
   listTodayTomorrowPresets
 } from '../services/racePresets.js';
+import { importEquibaseRaces } from '../services/equibaseImporter.js';
 
 const BET_TYPES = ['exacta', 'quinella', 'trifecta', 'superfecta', 'super_hi_5'];
 
@@ -67,6 +68,15 @@ const getRaceByExternalIdStmt = db.prepare(
   `SELECT id
    FROM races
    WHERE external_id = ?`
+);
+
+const getRaceByIdentityStmt = db.prepare(
+  `SELECT id
+   FROM races
+   WHERE lower(track) = lower(?)
+     AND race_number = ?
+     AND substr(post_time, 1, 10) = substr(?, 1, 10)
+   LIMIT 1`
 );
 
 const listHorsesStmt = db.prepare(
@@ -216,6 +226,30 @@ const createOrUpdateRaceTx = db.transaction((payload) => {
     const existing = getRaceByExternalIdStmt.get(payload.external_id);
     if (existing) {
       raceId = Number(existing.id);
+      updateRaceByIdStmt.run(
+        payload.name,
+        payload.track,
+        payload.race_number,
+        payload.distance,
+        payload.surface,
+        payload.class,
+        payload.post_time,
+        payload.status,
+        payload.source,
+        takeout,
+        payload.race_config_json ?? null,
+        payload.brisnet_config_json ?? null,
+        payload.sources_json ?? null,
+        raceId
+      );
+      deleteHorsesForRaceStmt.run(raceId);
+    }
+  }
+
+  if (!raceId && payload.track && payload.race_number && payload.post_time) {
+    const existingByIdentity = getRaceByIdentityStmt.get(payload.track, payload.race_number, payload.post_time);
+    if (existingByIdentity) {
+      raceId = Number(existingByIdentity.id);
       updateRaceByIdStmt.run(
         payload.name,
         payload.track,
@@ -397,6 +431,48 @@ export const createRacesRouter = (io) => {
     }
 
     return res.json({ imported });
+  });
+
+  router.post('/import/equibase', async (req, res) => {
+    const trackCode =
+      typeof req.body?.trackCode === 'string' && req.body.trackCode.trim().length
+        ? req.body.trackCode.trim().toUpperCase()
+        : 'OP';
+
+    const dates = Array.isArray(req.body?.dates)
+      ? req.body.dates.map((entry) => String(entry)).filter(Boolean)
+      : [];
+
+    if (!dates.length) {
+      return res.status(400).json({ error: 'dates array is required (YYYY-MM-DD).' });
+    }
+
+    try {
+      const liveImport = await importEquibaseRaces({
+        trackCode,
+        dates,
+        raceNumbers: Array.isArray(req.body?.raceNumbers) ? req.body.raceNumbers : undefined
+      });
+
+      const imported = [];
+      for (const payload of liveImport.importedPayloads) {
+        const raceId = createOrUpdateRaceTx(payload);
+        const race = hydrateRace(raceId);
+        io.emit('race_created', { race });
+        imported.push({ raceId, raceName: race?.name ?? payload.name, externalId: payload.external_id });
+      }
+
+      return res.json({
+        trackCode,
+        imported,
+        diagnostics: liveImport.diagnostics
+      });
+    } catch (error) {
+      return res.status(502).json({
+        error: 'Equibase import failed.',
+        detail: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
   });
 
   router.get('/', (_req, res) => {

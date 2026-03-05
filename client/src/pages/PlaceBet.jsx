@@ -42,7 +42,7 @@ export default function PlaceBet() {
 
   const betType = useMemo(() => getBetType(betTypeId), [betTypeId]);
 
-  const horses = race?.horses ?? [];
+  const horses = (race?.horses ?? []).filter((horse) => !Number(horse.scratched));
 
   useEffect(() => {
     const load = async () => {
@@ -368,6 +368,11 @@ export default function PlaceBet() {
         <p className="mt-1 text-sm text-stone-600">
           {race.name} • {race.track} • Race {race.race_number || '-'}
         </p>
+        {Array.isArray(race.horses) && race.horses.some((horse) => Number(horse.scratched)) ? (
+          <p className="mt-1 text-xs text-rose-700">
+            Scratched: {race.horses.filter((horse) => Number(horse.scratched)).map((horse) => horse.name).join(', ')}
+          </p>
+        ) : null}
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <div className="tile">
             <p className="tile-title">Active User</p>
