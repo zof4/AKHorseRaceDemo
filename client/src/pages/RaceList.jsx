@@ -132,6 +132,12 @@ export default function RaceList() {
                     Horses: {race.horse_count} • Takeout: {(Number(race.takeout_pct) * 100).toFixed(1)}%
                   </p>
                   <div className="mt-3 flex gap-2">
+                    <Link className="btn-secondary" to={`/races/${race.id}`}>
+                      View Card
+                    </Link>
+                    <Link className="btn-primary" to={`/races/${race.id}/bet`}>
+                      Place Bet
+                    </Link>
                     <Link className="btn-secondary" to={`/algorithm?raceId=${race.id}`}>
                       Open In Algorithm
                     </Link>

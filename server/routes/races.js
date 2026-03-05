@@ -386,7 +386,7 @@ export const createRacesRouter = (io) => {
     res.json({ races });
   });
 
-  router.get('/:raceId', (req, res) => {
+  router.get('/:raceId(\\d+)', (req, res) => {
     const raceId = Number(req.params.raceId);
     if (!Number.isInteger(raceId) || raceId <= 0) {
       return res.status(400).json({ error: 'Invalid race id.' });
@@ -413,7 +413,7 @@ export const createRacesRouter = (io) => {
     return res.status(201).json({ race });
   });
 
-  router.patch('/:raceId/status', (req, res) => {
+  router.patch('/:raceId(\\d+)/status', (req, res) => {
     const raceId = Number(req.params.raceId);
     const status = typeof req.body?.status === 'string' ? req.body.status.trim() : '';
     const allowed = new Set(['upcoming', 'open', 'closed', 'official']);
