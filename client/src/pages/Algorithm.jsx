@@ -194,6 +194,26 @@ export default function Algorithm() {
     );
   }, [selectedRunner]);
 
+  const selectedRunnerImpact = useMemo(() => {
+    if (!selectedRunner || !analysis?.brisnetImpact?.horseComparisons) {
+      return null;
+    }
+    return (
+      analysis.brisnetImpact.horseComparisons.find(
+        (entry) => normalizeHorseName(entry.name) === normalizeHorseName(selectedRunner.name)
+      ) ?? null
+    );
+  }, [analysis, selectedRunner]);
+
+  const brisnetSignalContribution = useMemo(() => {
+    if (!selectedRunner?.scoreBreakdown?.base?.components) {
+      return null;
+    }
+    return (
+      selectedRunner.scoreBreakdown.base.components.find((component) => component.key === 'brisnetSignal') ?? null
+    );
+  }, [selectedRunner]);
+
   const loadRaces = async () => {
     const { races: rows } = await api.listRaces();
     setRaces(rows);
@@ -207,11 +227,29 @@ export default function Algorithm() {
   };
 
   const runAnalysis = async (raceId, bankrollValue = bankroll) => {
-    const { ranked, undercoverWinner, topBets, counterBets, tierSuggestions, modelMeta } = await api.analyzeRace(
+    const {
+      ranked,
+      rankedWithoutBrisnet,
+      brisnetImpact,
+      undercoverWinner,
+      topBets,
+      counterBets,
+      tierSuggestions,
+      modelMeta
+    } = await api.analyzeRace(
       raceId,
       bankrollValue
     );
-    setAnalysis({ ranked, undercoverWinner, topBets, counterBets, tierSuggestions, modelMeta });
+    setAnalysis({
+      ranked,
+      rankedWithoutBrisnet,
+      brisnetImpact,
+      undercoverWinner,
+      topBets,
+      counterBets,
+      tierSuggestions,
+      modelMeta
+    });
   };
 
   const autoImportTodayTomorrow = async () => {
@@ -635,6 +673,49 @@ export default function Algorithm() {
             </div>
           </div>
 
+          <div className="mt-3 tile">
+            <p className="text-sm font-semibold text-stone-900">BRISNET Effect For This Horse</p>
+            <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+              <li className="flex items-center justify-between gap-2">
+                <span>BRISNET rating input</span>
+                <strong>{asScore(selectedRunner.brisnetSignal)}</strong>
+              </li>
+              <li className="flex items-center justify-between gap-2">
+                <span>Weighted BRISNET contribution ({asScore(brisnetSignalContribution?.weight)})</span>
+                <strong>{asPoints(brisnetSignalContribution?.contribution)}</strong>
+              </li>
+              <li className="flex items-center justify-between gap-2">
+                <span>Score with BRISNET</span>
+                <strong>{asPoints(selectedRunnerImpact?.withBrisnet?.score ?? selectedRunner.score)}</strong>
+              </li>
+              <li className="flex items-center justify-between gap-2">
+                <span>Score without BRISNET (neutral signal=50)</span>
+                <strong>{asPoints(selectedRunnerImpact?.withoutBrisnet?.score)}</strong>
+              </li>
+              <li className="flex items-center justify-between gap-2">
+                <span>Score delta from BRISNET</span>
+                <strong
+                  className={`${
+                    Number(selectedRunnerImpact?.scoreDelta) >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                  }`}
+                >
+                  {asPoints(selectedRunnerImpact?.scoreDelta)}
+                </strong>
+              </li>
+              <li className="flex items-center justify-between gap-2">
+                <span>Rank shift from BRISNET</span>
+                <strong
+                  className={`${
+                    Number(selectedRunnerImpact?.rankDelta) >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                  }`}
+                >
+                  {Number(selectedRunnerImpact?.rankDelta) > 0 ? '+' : ''}
+                  {selectedRunnerImpact?.rankDelta ?? 0}
+                </strong>
+              </li>
+            </ul>
+          </div>
+
           <div className="mt-3 grid gap-3 lg:grid-cols-2">
             <div className="tile">
               <p className="text-sm font-semibold text-stone-900">Historical Context</p>
@@ -758,6 +839,48 @@ export default function Algorithm() {
       </article>
 
       <article className="panel">
+        <h3 className="text-base font-semibold">BRISNET Impact Comparison</h3>
+        {analysis?.brisnetImpact ? (
+          <div className="mt-3 grid gap-3">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="tile">
+                <p className="tile-title">Boosted Horses</p>
+                <p className="tile-value text-base">{analysis.brisnetImpact.summary?.positiveScoreDeltaCount ?? 0}</p>
+              </div>
+              <div className="tile">
+                <p className="tile-title">Reduced Horses</p>
+                <p className="tile-value text-base">{analysis.brisnetImpact.summary?.negativeScoreDeltaCount ?? 0}</p>
+              </div>
+              <div className="tile">
+                <p className="tile-title">Unchanged</p>
+                <p className="tile-value text-base">{analysis.brisnetImpact.summary?.unchangedScoreDeltaCount ?? 0}</p>
+              </div>
+            </div>
+
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Top Movers (With vs Without BRISNET)</p>
+              <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                {(analysis.brisnetImpact.topMovers || []).map((entry) => (
+                  <li key={`impact-${entry.name}`} className="flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      {entry.name} • Rank {entry.withBrisnet.rank} vs {entry.withoutBrisnet.rank}
+                    </span>
+                    <span
+                      className={`font-semibold ${Number(entry.scoreDelta) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}
+                    >
+                      Score delta {asPoints(entry.scoreDelta)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-stone-600">No BRISNET impact comparison available yet.</p>
+        )}
+      </article>
+
+      <article className="panel">
         <h3 className="text-base font-semibold">Market Intelligence</h3>
         {brisnetIntel ? (
           <div className="mt-2 grid gap-2 text-sm text-stone-700">
@@ -773,6 +896,28 @@ export default function Algorithm() {
                 ? brisnetIntel.optixSelections.join(', ')
                 : 'None returned for this race.'}
             </p>
+            <p>
+              Field match quality: spot-play match{' '}
+              {brisnetIntel.diagnostics?.matching?.spotPlayMatchedFieldHorse ? 'yes' : 'no'} • Optix matched{' '}
+              {Number(brisnetIntel.diagnostics?.matching?.optixMatchedFieldCount || 0)}
+            </p>
+            {Array.isArray(brisnetIntel.diagnostics?.matching?.unmatchedOptixSelections) &&
+            brisnetIntel.diagnostics.matching.unmatchedOptixSelections.length ? (
+              <p>
+                Unmatched Optix selections: {brisnetIntel.diagnostics.matching.unmatchedOptixSelections.join(', ')}
+              </p>
+            ) : null}
+            <div className="rounded-xl border border-stone-200 bg-stone-50 p-2 text-xs text-stone-700">
+              <p className="font-semibold">Fetch diagnostics</p>
+              <p>
+                Spot Plays: {brisnetIntel.diagnostics?.requests?.spotPlays?.ok ? 'ok' : 'not ok'} (
+                {brisnetIntel.diagnostics?.requests?.spotPlays?.status ?? 'n/a'})
+              </p>
+              <p>
+                Optix: {brisnetIntel.diagnostics?.requests?.optix?.ok ? 'ok' : 'not ok'} (
+                {brisnetIntel.diagnostics?.requests?.optix?.status ?? 'n/a'})
+              </p>
+            </div>
           </div>
         ) : (
           <p className="mt-2 text-sm text-stone-600">

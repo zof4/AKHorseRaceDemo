@@ -253,7 +253,9 @@ export const createAlgorithmRouter = () => {
                 fetchedAt: brisnetPayload.fetchedAt,
                 spotPlay: brisnetPayload.spotPlay,
                 optixSelections: brisnetPayload.optixSelections,
-                sources: brisnetPayload.sources
+                sources: brisnetPayload.sources,
+                signals: brisnetPayload.signals,
+                diagnostics: brisnetPayload.diagnostics
               }
             : null
         },
