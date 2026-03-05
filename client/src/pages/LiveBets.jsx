@@ -122,7 +122,8 @@ export default function LiveBets() {
       <article className="panel">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold">Live Bets</h2>
+            <p className="kicker">Realtime Feed</p>
+            <h2 className="page-title mt-1">Live Bets</h2>
             <p className="mt-1 text-sm text-stone-600">All player tickets, costs, and probable payout ranges.</p>
           </div>
           <div className="flex items-end gap-2">
@@ -161,7 +162,7 @@ export default function LiveBets() {
                 const isSettled = typeof bet.is_winner === 'number';
 
                 return (
-                  <li key={bet.id} className="rounded-md border border-stone-200 p-3">
+                  <li key={bet.id} className="tile">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
                         <p className="text-sm font-semibold text-stone-900">

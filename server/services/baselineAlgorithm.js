@@ -12,6 +12,16 @@ const SCORE_WEIGHTS = {
 };
 
 const DEFAULT_ODDS_PROBABILITY = 0.1;
+const VOLATILITY_PENALTY_WEIGHT = 0.12;
+const VALUE_EDGE_LIFT_WEIGHT = 0.22;
+const STABILITY_BONUS_WEIGHT = 6;
+
+const MODEL_META = {
+  scoreWeights: SCORE_WEIGHTS,
+  volatilityPenaltyWeight: VOLATILITY_PENALTY_WEIGHT,
+  valueEdgeLiftWeight: VALUE_EDGE_LIFT_WEIGHT,
+  stabilityBonusWeight: STABILITY_BONUS_WEIGHT
+};
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -60,32 +70,98 @@ const normalizedSoftmax = (values) => {
   return exps.map((value) => (sum > 0 ? value / sum : 0));
 };
 
-const baseScore = (horse) => {
-  const weighted = Object.entries(SCORE_WEIGHTS).reduce((acc, [key, weight]) => {
-    return acc + numberOr(horse[key]) * weight;
-  }, 0);
+const probabilityToFairOdds = (probability) => {
+  const safeProbability = Number(probability);
+  if (!Number.isFinite(safeProbability) || safeProbability <= 0) {
+    return {
+      decimal: null,
+      fractional: null,
+      text: 'N/A'
+    };
+  }
 
-  const volatilityPenalty = numberOr(horse.volatility) * 0.12;
-  return clamp(weighted - volatilityPenalty, 0, 100);
+  const decimal = 1 / safeProbability;
+  const fractional = (1 - safeProbability) / safeProbability;
+
+  return {
+    decimal: Number(decimal.toFixed(2)),
+    fractional: Number(fractional.toFixed(2)),
+    text: `${fractional.toFixed(2)}/1`
+  };
 };
 
-const stabilityIndex = (horse) => {
+const buildBaseBreakdown = (horse) => {
+  const components = Object.entries(SCORE_WEIGHTS).map(([key, weight]) => {
+    const rating = numberOr(horse[key]);
+    const contribution = rating * weight;
+    return {
+      key,
+      rating,
+      weight,
+      contribution: Number(contribution.toFixed(3))
+    };
+  });
+
+  const weightedSum = components.reduce((acc, component) => acc + component.contribution, 0);
+  const volatilityRating = numberOr(horse.volatility);
+  const volatilityPenalty = volatilityRating * VOLATILITY_PENALTY_WEIGHT;
+  const unclampedBase = weightedSum - volatilityPenalty;
+  const baseScore = clamp(unclampedBase, 0, 100);
+
+  return {
+    components,
+    weightedSum: Number(weightedSum.toFixed(3)),
+    volatilityRating,
+    volatilityPenalty: Number(volatilityPenalty.toFixed(3)),
+    unclampedBase: Number(unclampedBase.toFixed(3)),
+    baseScore: Number(baseScore.toFixed(3))
+  };
+};
+
+const buildStabilityBreakdown = (horse) => {
   const consistency = numberOr(horse.consistency);
   const inverseVolatility = 100 - numberOr(horse.volatility);
-  return clamp((consistency * 0.55 + inverseVolatility * 0.45) / 100, 0, 1);
+  const stabilityIndex = clamp((consistency * 0.55 + inverseVolatility * 0.45) / 100, 0, 1);
+
+  return {
+    consistency,
+    inverseVolatility: Number(inverseVolatility.toFixed(3)),
+    stabilityIndex: Number(stabilityIndex.toFixed(6))
+  };
 };
 
-const finalScore = (horse, modelProbability, edge) => {
-  const base = baseScore(horse);
-  const stability = stabilityIndex(horse);
-  const valueLift = edge * 100 * 0.22;
-  return clamp(base + valueLift + stability * 6, 0, 100);
+const buildScoreBreakdown = (horse, modelProbability, marketProbability) => {
+  const base = buildBaseBreakdown(horse);
+  const stability = buildStabilityBreakdown(horse);
+  const valueEdge = modelProbability - marketProbability;
+  const valueLift = valueEdge * 100 * VALUE_EDGE_LIFT_WEIGHT;
+  const stabilityBonus = stability.stabilityIndex * STABILITY_BONUS_WEIGHT;
+  const unclampedFinal = base.baseScore + valueLift + stabilityBonus;
+  const finalScore = clamp(unclampedFinal, 0, 100);
+
+  return {
+    base,
+    stability,
+    valueEdge: Number(valueEdge.toFixed(6)),
+    valueLift: Number(valueLift.toFixed(3)),
+    stabilityBonus: Number(stabilityBonus.toFixed(3)),
+    unclampedFinal: Number(unclampedFinal.toFixed(3)),
+    finalScore: Number(finalScore.toFixed(3))
+  };
 };
 
 const dollars = (value) => `$${Math.max(0, Math.round(value))}`;
 
 export const rankRace = (horses) => {
-  const modeled = horses.map((horse) => ({ ...horse, base: baseScore(horse) }));
+  const modeled = horses.map((horse) => {
+    const base = buildBaseBreakdown(horse);
+    return {
+      ...horse,
+      base: base.baseScore,
+      base_breakdown: base
+    };
+  });
+
   const probabilities = normalizedSoftmax(modeled.map((horse) => horse.base));
   const rawMarketProbabilities = modeled.map((horse) => impliedProbability(horse.odds));
   const marketDenominator = rawMarketProbabilities.reduce((acc, value) => acc + value, 0);
@@ -98,16 +174,20 @@ export const rankRace = (horses) => {
       const modelProbability = probabilities[index];
       const marketProbability = marketProbabilities[index];
       const edge = modelProbability - marketProbability;
-      const stability = stabilityIndex(horse);
-      const score = finalScore(horse, modelProbability, edge);
+      const scoreBreakdown = buildScoreBreakdown(horse, modelProbability, marketProbability);
+      const fairOdds = probabilityToFairOdds(modelProbability);
+      const marketFairOdds = probabilityToFairOdds(marketProbability);
 
       return {
         ...horse,
         modelProbability,
         marketProbability,
         valueEdge: edge,
-        stability,
-        score
+        stability: scoreBreakdown.stability.stabilityIndex,
+        score: scoreBreakdown.finalScore,
+        fairOdds,
+        marketFairOdds,
+        scoreBreakdown
       };
     })
     .sort((left, right) => right.score - left.score);
@@ -210,6 +290,7 @@ export const runBaselineAnalysis = ({ horses, bankroll }) => {
   const undercoverWinner = identifyUndercoverWinner(ranked);
 
   return {
+    modelMeta: MODEL_META,
     ranked,
     undercoverWinner,
     topBets: buildTopBets(ranked, bankroll),

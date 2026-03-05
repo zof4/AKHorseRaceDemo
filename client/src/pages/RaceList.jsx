@@ -84,7 +84,8 @@ export default function RaceList() {
     <section className="grid gap-4">
       <article className="panel flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">Races</h2>
+          <p className="kicker">Race Cards</p>
+          <h2 className="page-title mt-1">Races</h2>
           <p className="text-sm text-stone-600">
             Today/tomorrow presets are auto-imported on page load.
           </p>
@@ -120,11 +121,7 @@ export default function RaceList() {
                         {race.track} {race.race_number ? `• Race ${race.race_number}` : ''}
                       </p>
                     </div>
-                    <span
-                      className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
-                        badgeClasses[race.status] || 'bg-stone-100 text-stone-700'
-                      }`}
-                    >
+                    <span className={`status-chip ${badgeClasses[race.status] || 'bg-stone-100 text-stone-700'}`}>
                       {race.status}
                     </span>
                   </div>

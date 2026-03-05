@@ -4,13 +4,27 @@
 
 :root {
   color-scheme: light;
+  --bg-main: #f6f2ea;
+  --bg-surface: #fffdf8;
+  --bg-muted: #efe6d8;
+  --text-main: #2d251d;
+  --text-soft: #6f6255;
+  --accent-main: #7d3d14;
+  --accent-strong: #5a2b0e;
+  --accent-faint: #f4dfcb;
+  --success: #166534;
+  --danger: #be123c;
+  --warning: #9a3412;
 }
 
 body {
   margin: 0;
-  font-family: 'Avenir Next', 'Helvetica Neue', sans-serif;
-  background: radial-gradient(circle at top left, #f4e8dd 0%, transparent 45%),
-    radial-gradient(circle at top right, #dce9df 0%, transparent 45%), #f5f2eb;
+  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at top left, #f3e8d7 0%, transparent 44%),
+    radial-gradient(circle at top right, #f5ede3 0%, transparent 43%),
+    var(--bg-main);
 }
 
 .safe-bottom {
@@ -18,17 +32,112 @@ body {
 }
 
 .panel {
-  @apply rounded-xl border border-stone-300 bg-white/95 p-4 shadow-sm;
+  @apply rounded-2xl border p-4 shadow-sm;
+  border-color: #ddcdb8;
+  background: var(--bg-surface);
 }
 
 .input {
-  @apply w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-700 focus:ring-2 focus:ring-amber-700/20;
+  @apply w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none transition focus:ring-2;
+  border-color: #d7c4ae;
+  color: var(--text-main);
+}
+
+.input:focus {
+  border-color: var(--accent-main);
+  --tw-ring-color: rgba(125, 61, 20, 0.22);
 }
 
 .btn-primary {
-  @apply rounded-md bg-amber-800 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-40;
+  @apply rounded-xl px-4 py-2 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40;
+  background: var(--accent-main);
+}
+
+.btn-primary:hover {
+  background: var(--accent-strong);
 }
 
 .btn-secondary {
-  @apply rounded-md border border-amber-800 px-4 py-2 text-sm font-semibold text-amber-900 transition hover:bg-amber-50;
+  @apply rounded-xl border px-4 py-2 text-sm font-semibold transition;
+  border-color: var(--accent-main);
+  color: var(--accent-main);
+}
+
+.btn-secondary:hover {
+  background: #f7ece1;
+}
+
+.page-title {
+  @apply text-xl font-semibold md:text-2xl;
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, serif;
+}
+
+.kicker {
+  @apply text-[11px] uppercase tracking-[0.18em];
+  color: var(--text-soft);
+}
+
+.tile {
+  @apply rounded-2xl border p-3;
+  border-color: #e0d2bf;
+  background: var(--bg-surface);
+}
+
+.tile-title {
+  @apply text-xs font-semibold uppercase tracking-wide;
+  color: var(--text-soft);
+}
+
+.tile-value {
+  @apply mt-1 text-lg font-semibold;
+}
+
+.status-chip {
+  @apply inline-flex items-center rounded-full px-2 py-1 text-[11px] font-semibold;
+}
+
+.status-open {
+  @apply bg-emerald-100 text-emerald-800;
+}
+
+.status-upcoming {
+  @apply bg-sky-100 text-sky-800;
+}
+
+.status-closed {
+  @apply bg-amber-100 text-amber-800;
+}
+
+.status-official {
+  @apply bg-stone-200 text-stone-700;
+}
+
+.meter-track {
+  @apply h-2 w-full overflow-hidden rounded-full;
+  background: #e8dece;
+}
+
+.meter-fill {
+  @apply h-full rounded-full;
+  background: linear-gradient(90deg, #c6844f, #7d3d14);
+}
+
+.accent-band {
+  background: linear-gradient(135deg, #8a451b, #5a2b0e);
+}
+
+.desktop-shell {
+  @apply mx-auto w-full max-w-7xl gap-6 px-4 pb-24 pt-4 lg:grid lg:grid-cols-[240px,minmax(0,1fr)] lg:px-6 lg:pb-6 lg:pt-6;
+}
+
+.desktop-sidebar {
+  @apply hidden lg:block;
+}
+
+.desktop-main {
+  @apply min-w-0;
+}
+
+.mobile-nav {
+  @apply lg:hidden;
 }

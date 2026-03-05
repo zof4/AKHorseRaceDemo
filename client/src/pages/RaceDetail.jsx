@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import socket from '../socket.js';
 
 const formatMoney = (value) => `$${Number(value || 0).toFixed(2)}`;
 
@@ -45,6 +46,38 @@ export default function RaceDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raceId]);
 
+  useEffect(() => {
+    if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
+      return undefined;
+    }
+
+    socket.emit('join_race', { raceId: numericRaceId });
+
+    const onPoolUpdated = (payload) => {
+      if (Number(payload?.raceId) !== numericRaceId || !Array.isArray(payload?.pools)) {
+        return;
+      }
+      setPools(payload.pools);
+    };
+
+    const onBetPlaced = (payload) => {
+      if (Number(payload?.bet?.race_id) !== numericRaceId) {
+        return;
+      }
+      load();
+    };
+
+    socket.on('pool_updated', onPoolUpdated);
+    socket.on('bet_placed', onBetPlaced);
+
+    return () => {
+      socket.emit('leave_race', { raceId: numericRaceId });
+      socket.off('pool_updated', onPoolUpdated);
+      socket.off('bet_placed', onBetPlaced);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [numericRaceId]);
+
   if (loading) {
     return <section className="panel">Loading race detail...</section>;
   }
@@ -68,13 +101,25 @@ export default function RaceDetail() {
   return (
     <section className="grid gap-4">
       <article className="panel">
-        <h2 className="text-lg font-semibold">{race.name}</h2>
+        <p className="kicker">Race Card</p>
+        <h2 className="page-title mt-1">{race.name}</h2>
         <p className="mt-1 text-sm text-stone-600">
           {race.track} • Race {race.race_number || '-'} • {race.distance || 'Distance TBD'} • {race.class || 'Class TBD'}
         </p>
-        <p className="mt-1 text-xs text-stone-500">
-          Status: {race.status} • Takeout: {(Number(race.takeout_pct || 0) * 100).toFixed(1)}%
-        </p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <div className="tile">
+            <p className="tile-title">Status</p>
+            <p className="tile-value text-base capitalize">{race.status}</p>
+          </div>
+          <div className="tile">
+            <p className="tile-title">Takeout</p>
+            <p className="tile-value text-base">{(Number(race.takeout_pct || 0) * 100).toFixed(1)}%</p>
+          </div>
+          <div className="tile">
+            <p className="tile-title">Horses</p>
+            <p className="tile-value text-base">{race.horses.length}</p>
+          </div>
+        </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <Link className="btn-primary" to={`/races/${race.id}/bet`}>
             Place Bet
@@ -90,31 +135,20 @@ export default function RaceDetail() {
 
       <article className="panel">
         <h3 className="text-base font-semibold">Horses</h3>
-        <div className="mt-3 overflow-x-auto">
-          <table className="min-w-[760px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-stone-300 text-xs uppercase tracking-wide text-stone-500">
-                <th className="px-2 py-2">#</th>
-                <th className="px-2 py-2">Horse</th>
-                <th className="px-2 py-2">Odds</th>
-                <th className="px-2 py-2">Class</th>
-                <th className="px-2 py-2">Speed</th>
-                <th className="px-2 py-2">BRIS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {race.horses.map((horse) => (
-                <tr key={horse.id} className="border-b border-stone-200">
-                  <td className="px-2 py-2">{horse.post_position || '-'}</td>
-                  <td className="px-2 py-2">{horse.name}</td>
-                  <td className="px-2 py-2">{horse.morning_line_odds || '-'}</td>
-                  <td className="px-2 py-2">{Number(horse.class_rating ?? 0).toFixed(0)}</td>
-                  <td className="px-2 py-2">{Number(horse.speed_rating ?? 0).toFixed(0)}</td>
-                  <td className="px-2 py-2">{Number(horse.brisnet_signal ?? 0).toFixed(0)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="mt-3 grid gap-2">
+          {race.horses.map((horse) => (
+            <div key={horse.id} className="tile">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold">{horse.post_position || '-'} - {horse.name}</p>
+                  <p className="text-xs text-stone-600">Odds {horse.morning_line_odds || '-'} • BRIS {Number(horse.brisnet_signal ?? 0).toFixed(0)}</p>
+                </div>
+                <p className="rounded-full bg-stone-100 px-2 py-1 text-[11px] font-semibold text-stone-700">
+                  Speed {Number(horse.speed_rating ?? 0).toFixed(0)}
+                </p>
+              </div>
+            </div>
+          ))}
         </div>
       </article>
 
@@ -122,7 +156,7 @@ export default function RaceDetail() {
         <h3 className="text-base font-semibold">Pools & Probables</h3>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           {pools.map((pool) => (
-            <div key={pool.bet_type} className="rounded-md border border-stone-200 p-3">
+            <div key={pool.bet_type} className="tile">
               <div className="flex items-center justify-between">
                 <p className="font-semibold">{poolTitle(pool.bet_type)}</p>
                 <p className="text-sm text-stone-600">{formatMoney(pool.total_amount)}</p>

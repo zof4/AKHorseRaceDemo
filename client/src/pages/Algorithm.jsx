@@ -1,9 +1,40 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
 const asPercent = (value) => `${(Number(value || 0) * 100).toFixed(1)}%`;
+const asScore = (value) => Number(value || 0).toFixed(1);
+const asPoints = (value) => Number(value || 0).toFixed(3);
 const pad = (value) => String(value).padStart(2, '0');
+const normalizeHorseName = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const METRIC_LABELS = {
+  speed: 'Speed',
+  form: 'Form',
+  class: 'Class',
+  paceFit: 'Pace Fit',
+  distanceFit: 'Distance Fit',
+  connections: 'Connections',
+  consistency: 'Consistency',
+  lateKick: 'Late Kick',
+  improvingTrend: 'Improving Trend',
+  brisnetSignal: 'BRISNET Signal',
+  volatility: 'Volatility'
+};
+
+const METRIC_MEANINGS = {
+  speed: 'Raw pace/speed capability. Higher increases model win chance.',
+  form: 'Recent condition and current cycle. Higher means stronger current form.',
+  class: 'Quality of prior company. Higher suggests stronger competition history.',
+  paceFit: 'How likely running style matches today pace setup.',
+  distanceFit: 'How well this horse projects at today distance.',
+  connections: 'Trainer/jockey quality composite signal.',
+  consistency: 'Likelihood of repeating prior performance level.',
+  lateKick: 'Closing strength in later fractions.',
+  improvingTrend: 'Positive trajectory over recent starts.',
+  brisnetSignal: 'External signal boost from BRISNET overlays.',
+  volatility: 'Performance variance. Higher volatility reduces reliability.'
+};
 
 const dateKeyFor = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
@@ -32,6 +63,47 @@ const extractRaceDateKey = (race) => {
   return null;
 };
 
+const riskToneClasses = {
+  Low: 'bg-emerald-100 text-emerald-800',
+  Mid: 'bg-amber-100 text-amber-900',
+  'Mid-High': 'bg-orange-100 text-orange-900',
+  High: 'bg-rose-100 text-rose-800'
+};
+
+const tierToneClasses = {
+  'Sure Bet': 'border-emerald-200 bg-emerald-50',
+  'Mid Bet': 'border-amber-200 bg-amber-50',
+  'Long-Shot Bet': 'border-rose-200 bg-rose-50'
+};
+
+function ProbabilityBars({ modelProbability, marketProbability }) {
+  const modelWidth = Math.max(4, Math.min(100, Number(modelProbability || 0) * 100));
+  const marketWidth = Math.max(4, Math.min(100, Number(marketProbability || 0) * 100));
+
+  return (
+    <div className="grid gap-1 text-[11px] text-stone-600">
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <span>Model</span>
+          <span>{asPercent(modelProbability)}</span>
+        </div>
+        <div className="meter-track">
+          <div className="meter-fill" style={{ width: `${modelWidth}%` }} />
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <span>Market</span>
+          <span>{asPercent(marketProbability)}</span>
+        </div>
+        <div className="meter-track">
+          <div className="h-full rounded-full bg-[#9f8f7c]" style={{ width: `${marketWidth}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Algorithm() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [races, setRaces] = useState([]);
@@ -45,6 +117,9 @@ export default function Algorithm() {
   const [brisnetIntel, setBrisnetIntel] = useState(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('Waiting for first refresh.');
+  const [selectedHorseName, setSelectedHorseName] = useState('');
+  const [presetHistoryByExternalRaceId, setPresetHistoryByExternalRaceId] = useState({});
+  const marketPrimedRaceIdsRef = useRef(new Set());
 
   const selectedRaceId = Number(searchParams.get('raceId') || 0);
 
@@ -71,29 +146,88 @@ export default function Algorithm() {
     [filteredRaces, selectedRaceId]
   );
 
+  const rankedWithPosts = useMemo(() => {
+    if (!race || !analysis?.ranked) {
+      return [];
+    }
+
+    const postByHorseName = new Map(
+      race.horses.map((horse) => [normalizeHorseName(horse.name), horse.post_position || '-'])
+    );
+
+    return analysis.ranked.map((runner) => ({
+      ...runner,
+      postPosition: postByHorseName.get(normalizeHorseName(runner.name)) ?? '-'
+    }));
+  }, [race, analysis]);
+
+  const selectedRunner = useMemo(() => {
+    if (!rankedWithPosts.length) {
+      return null;
+    }
+
+    const byName = rankedWithPosts.find((runner) => normalizeHorseName(runner.name) === normalizeHorseName(selectedHorseName));
+    return byName ?? rankedWithPosts[0];
+  }, [rankedWithPosts, selectedHorseName]);
+
+  const selectedRaceHorse = useMemo(() => {
+    if (!race || !selectedRunner) {
+      return null;
+    }
+    return race.horses.find((horse) => normalizeHorseName(horse.name) === normalizeHorseName(selectedRunner.name)) ?? null;
+  }, [race, selectedRunner]);
+
+  const selectedPresetHorse = useMemo(() => {
+    if (!race || !selectedRunner) {
+      return null;
+    }
+    const perRace = presetHistoryByExternalRaceId[String(race.external_id || '')];
+    return perRace?.[normalizeHorseName(selectedRunner.name)] ?? null;
+  }, [presetHistoryByExternalRaceId, race, selectedRunner]);
+
+  const selectedContributionRows = useMemo(() => {
+    if (!selectedRunner?.scoreBreakdown?.base?.components) {
+      return [];
+    }
+    return [...selectedRunner.scoreBreakdown.base.components].sort(
+      (left, right) => Math.abs(Number(right.contribution || 0)) - Math.abs(Number(left.contribution || 0))
+    );
+  }, [selectedRunner]);
+
   const loadRaces = async () => {
-    const { races } = await api.listRaces();
-    setRaces(races);
-    return races;
+    const { races: rows } = await api.listRaces();
+    setRaces(rows);
+    return rows;
   };
 
   const loadRaceDetail = async (raceId) => {
-    const { race } = await api.getRace(raceId);
-    setRace(race);
-    return race;
+    const { race: row } = await api.getRace(raceId);
+    setRace(row);
+    return row;
   };
 
   const runAnalysis = async (raceId, bankrollValue = bankroll) => {
-    const { ranked, undercoverWinner, topBets, counterBets, tierSuggestions } = await api.analyzeRace(
+    const { ranked, undercoverWinner, topBets, counterBets, tierSuggestions, modelMeta } = await api.analyzeRace(
       raceId,
       bankrollValue
     );
-    setAnalysis({ ranked, undercoverWinner, topBets, counterBets, tierSuggestions });
+    setAnalysis({ ranked, undercoverWinner, topBets, counterBets, tierSuggestions, modelMeta });
   };
 
   const autoImportTodayTomorrow = async () => {
     const { presets } = await api.listRacePresets();
     const targetDateKeys = new Set([todayKey, tomorrowKey]);
+
+    const presetHorseByRace = {};
+    for (const preset of presets) {
+      const horsesByName = {};
+      for (const horse of preset.horses || []) {
+        horsesByName[normalizeHorseName(horse.name)] = horse;
+      }
+      presetHorseByRace[preset.id] = horsesByName;
+    }
+    setPresetHistoryByExternalRaceId(presetHorseByRace);
+
     const presetIds = presets
       .filter((preset) => targetDateKeys.has(extractPresetDateKey(preset)))
       .map((preset) => preset.id);
@@ -113,11 +247,7 @@ export default function Algorithm() {
 
       try {
         await autoImportTodayTomorrow();
-        const raceRows = await loadRaces();
-        if (!raceRows.length) {
-          setLoading(false);
-          return;
-        }
+        await loadRaces();
       } catch (err) {
         setError(err.message);
       } finally {
@@ -163,6 +293,15 @@ export default function Algorithm() {
   }, [selectedRace?.id]);
 
   useEffect(() => {
+    if (!rankedWithPosts.length) {
+      return;
+    }
+    if (!selectedHorseName || !rankedWithPosts.some((runner) => normalizeHorseName(runner.name) === normalizeHorseName(selectedHorseName))) {
+      setSelectedHorseName(rankedWithPosts[0].name);
+    }
+  }, [rankedWithPosts, selectedHorseName]);
+
+  useEffect(() => {
     if (!autoRefresh || !selectedRace) {
       return undefined;
     }
@@ -174,6 +313,30 @@ export default function Algorithm() {
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, selectedRace?.id, bankroll]);
+
+  useEffect(() => {
+    if (!race?.id) {
+      return;
+    }
+
+    if (marketPrimedRaceIdsRef.current.has(race.id)) {
+      return;
+    }
+
+    const hasRaceConfig = race.race_config && typeof race.race_config === 'object';
+    const hasBrisnetConfig = race.brisnet_config && typeof race.brisnet_config === 'object';
+
+    if (!hasRaceConfig && !hasBrisnetConfig) {
+      setBrisnetIntel(null);
+      setStatus('This race has no live market or BRISNET source config.');
+      marketPrimedRaceIdsRef.current.add(race.id);
+      return;
+    }
+
+    marketPrimedRaceIdsRef.current.add(race.id);
+    refreshMarket();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [race?.id]);
 
   const refreshMarket = async () => {
     if (!selectedRace || refreshingMarket) {
@@ -190,7 +353,7 @@ export default function Algorithm() {
       setAnalysis(payload.analysis);
       setBrisnetIntel(payload.market?.brisnet ?? null);
       setStatus(
-        `Market refreshed: odds updates ${payload.updated.odds}, signal updates ${payload.updated.signals} at ${new Date(
+        `Market refreshed: odds ${payload.updated.odds}, signals ${payload.updated.signals} at ${new Date(
           payload.fetchedAt
         ).toLocaleTimeString()}.`
       );
@@ -233,7 +396,7 @@ export default function Algorithm() {
   if (!races.length) {
     return (
       <section className="panel">
-        <h2 className="text-lg font-semibold">Algorithm Systems</h2>
+        <h2 className="page-title">Algorithm Systems</h2>
         <p className="mt-2 text-sm text-stone-600">No races are imported yet.</p>
       </section>
     );
@@ -242,34 +405,58 @@ export default function Algorithm() {
   return (
     <section className="grid gap-4">
       <article className="panel">
-        <h2 className="text-lg font-semibold">Algorithm Systems</h2>
+        <p className="kicker">Model Control</p>
+        <h2 className="page-title mt-1">Algorithm Systems</h2>
         <p className="mt-1 text-sm text-stone-600">
-          Races auto-import from today ({todayKey}) and tomorrow ({tomorrowKey}); no manual import needed.
+          Race presets auto-import for {todayKey} and {tomorrowKey}. Tap any horse tile to inspect exact math and
+          historical context.
         </p>
-        <div className="mt-3 inline-flex overflow-hidden rounded-md border border-stone-300">
-          <button
-            type="button"
-            onClick={() => setDayMode('today')}
-            className={`px-3 py-2 text-sm font-semibold ${
-              dayMode === 'today' ? 'bg-amber-800 text-white' : 'bg-white text-stone-700'
-            }`}
-          >
-            Today
-          </button>
-          <button
-            type="button"
-            onClick={() => setDayMode('tomorrow')}
-            className={`px-3 py-2 text-sm font-semibold ${
-              dayMode === 'tomorrow' ? 'bg-amber-800 text-white' : 'bg-white text-stone-700'
-            }`}
-          >
-            Tomorrow
-          </button>
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <div className="tile">
+            <p className="tile-title">Imported Races</p>
+            <p className="tile-value">{races.length}</p>
+          </div>
+          <div className="tile">
+            <p className="tile-title">Filtered Day</p>
+            <p className="tile-value text-base capitalize">{dayMode}</p>
+          </div>
+          <div className="tile">
+            <p className="tile-title">Selected Race</p>
+            <p className="tile-value text-base">{selectedRace?.race_number ? `#${selectedRace.race_number}` : '-'}</p>
+          </div>
+          <div className="tile">
+            <p className="tile-title">Bankroll Sim</p>
+            <p className="tile-value">${Number(bankroll || 0).toFixed(0)}</p>
+          </div>
         </div>
       </article>
 
       <article className="panel">
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr),minmax(0,1fr),auto,auto] lg:items-end">
+          <label className="text-xs text-stone-600">
+            Race Day
+            <div className="mt-1 grid grid-cols-2 rounded-xl border border-[#d9c8b1] p-1">
+              <button
+                type="button"
+                onClick={() => setDayMode('today')}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold ${
+                  dayMode === 'today' ? 'accent-band text-white' : 'text-stone-700'
+                }`}
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                onClick={() => setDayMode('tomorrow')}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold ${
+                  dayMode === 'tomorrow' ? 'accent-band text-white' : 'text-stone-700'
+                }`}
+              >
+                Tomorrow
+              </button>
+            </div>
+          </label>
+
           <label className="text-xs text-stone-600">
             Race
             <select className="input mt-1" value={selectedRace?.id ?? ''} onChange={onRaceChange}>
@@ -280,6 +467,7 @@ export default function Algorithm() {
               ))}
             </select>
           </label>
+
           <label className="text-xs text-stone-600">
             Bankroll ($)
             <input
@@ -291,7 +479,8 @@ export default function Algorithm() {
               onChange={(event) => setBankroll(Number(event.target.value) || 100)}
             />
           </label>
-          <label className="flex items-center gap-2 rounded-md border border-stone-300 px-3 py-2 text-sm text-stone-700">
+
+          <label className="flex items-center gap-2 rounded-xl border border-[#d9c8b1] px-3 py-2 text-sm text-stone-700">
             <input
               type="checkbox"
               checked={autoRefresh}
@@ -299,63 +488,277 @@ export default function Algorithm() {
             />
             Auto refresh
           </label>
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
           <button className="btn-secondary" type="button" onClick={refreshMarket} disabled={refreshingMarket}>
             {refreshingMarket ? 'Refreshing...' : 'Refresh Market'}
           </button>
           <button className="btn-primary" type="button" onClick={onRecalculate}>
             Recalculate
           </button>
+          {selectedRace ? (
+            <>
+              <Link className="btn-secondary" to={`/races/${selectedRace.id}`}>
+                View Card
+              </Link>
+              <Link className="btn-secondary" to={`/races/${selectedRace.id}/bet`}>
+                Bet This Race
+              </Link>
+            </>
+          ) : null}
         </div>
+
         <p className="mt-2 text-sm text-stone-600">{status}</p>
         {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
       </article>
 
       {race ? (
         <article className="panel">
-          <h3 className="text-base font-semibold">{race.name}</h3>
-          <p className="mt-1 text-xs text-stone-600">
-            {race.track} • Race {race.race_number || '-'} • {race.distance || 'Distance TBD'} •
-            {'  '}status: {race.status}
-          </p>
-          <div className="mt-3 overflow-x-auto">
-            <table className="min-w-[900px] text-left text-sm">
-              <thead>
-                <tr className="border-b border-stone-300 text-xs uppercase tracking-wide text-stone-500">
-                  <th className="px-2 py-2">Horse</th>
-                  <th className="px-2 py-2">Odds</th>
-                  <th className="px-2 py-2">Speed</th>
-                  <th className="px-2 py-2">Form</th>
-                  <th className="px-2 py-2">Class</th>
-                  <th className="px-2 py-2">Pace</th>
-                  <th className="px-2 py-2">Distance</th>
-                  <th className="px-2 py-2">Conn.</th>
-                  <th className="px-2 py-2">Consist.</th>
-                  <th className="px-2 py-2">BRIS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {race.horses.map((horse) => (
-                  <tr key={horse.id} className="border-b border-stone-200">
-                    <td className="px-2 py-2">{horse.name}</td>
-                    <td className="px-2 py-2">{horse.morning_line_odds || '-'}</td>
-                    <td className="px-2 py-2">{Number(horse.speed_rating ?? 0).toFixed(0)}</td>
-                    <td className="px-2 py-2">{Number(horse.form_rating ?? 0).toFixed(0)}</td>
-                    <td className="px-2 py-2">{Number(horse.class_rating ?? 0).toFixed(0)}</td>
-                    <td className="px-2 py-2">{Number(horse.pace_fit_rating ?? 0).toFixed(0)}</td>
-                    <td className="px-2 py-2">{Number(horse.distance_fit_rating ?? 0).toFixed(0)}</td>
-                    <td className="px-2 py-2">{Number(horse.connections_rating ?? 0).toFixed(0)}</td>
-                    <td className="px-2 py-2">{Number(horse.consistency_rating ?? 0).toFixed(0)}</td>
-                    <td className="px-2 py-2">{Number(horse.brisnet_signal ?? 0).toFixed(0)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-base font-semibold">{race.name}</h3>
+              <p className="text-xs text-stone-600">
+                {race.track} • Race {race.race_number || '-'} • {race.distance || 'Distance TBD'} •{' '}
+                {race.class || 'Class TBD'}
+              </p>
+            </div>
+            <span className={`status-chip status-${race.status}`}>{race.status}</span>
+          </div>
+
+          <p className="mt-2 text-xs text-stone-500">Tap a horse to inspect full scoring breakdown.</p>
+          <div className="mt-3 grid gap-2">
+            {rankedWithPosts.map((runner) => {
+              const selected = normalizeHorseName(runner.name) === normalizeHorseName(selectedRunner?.name);
+              return (
+                <button
+                  key={runner.name}
+                  type="button"
+                  className={`tile text-left transition ${selected ? 'ring-2 ring-[var(--accent-main)]' : 'hover:bg-[#fbf4ec]'}`}
+                  onClick={() => setSelectedHorseName(runner.name)}
+                >
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-stone-900">
+                        #{runner.rank} {runner.name}
+                      </p>
+                      <p className="text-xs text-stone-600">
+                        Post {runner.postPosition} • Odds {runner.odds || '-'} • Score {asScore(runner.score)}
+                      </p>
+                      <p className="text-xs text-stone-500">
+                        Fair odds: {runner.fairOdds?.text || 'N/A'} • Market implied: {runner.marketFairOdds?.text || 'N/A'}
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                        Number(runner.valueEdge) >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                      }`}
+                    >
+                      Edge {asPercent(runner.valueEdge)}
+                    </span>
+                  </div>
+                  <ProbabilityBars modelProbability={runner.modelProbability} marketProbability={runner.marketProbability} />
+                </button>
+              );
+            })}
           </div>
         </article>
       ) : null}
 
+      {selectedRunner ? (
+        <article className="panel">
+          <h3 className="text-base font-semibold">Horse Inspector: {selectedRunner.name}</h3>
+          <p className="mt-1 text-xs text-stone-600">
+            This panel shows exactly how the algorithm scored this horse and how that becomes assigned fair odds.
+          </p>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="tile">
+              <p className="tile-title">Model Win %</p>
+              <p className="tile-value text-base">{asPercent(selectedRunner.modelProbability)}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Market Win %</p>
+              <p className="tile-value text-base">{asPercent(selectedRunner.marketProbability)}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Model Fair Odds</p>
+              <p className="tile-value text-base">{selectedRunner.fairOdds?.text || 'N/A'}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Value Edge</p>
+              <p className={`tile-value text-base ${Number(selectedRunner.valueEdge) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                {asPercent(selectedRunner.valueEdge)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Score Contributions</p>
+              <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                {selectedContributionRows.map((component) => (
+                  <li key={component.key} className="flex items-center justify-between gap-2">
+                    <span>
+                      {METRIC_LABELS[component.key] || component.key}: {asScore(component.rating)} × {asScore(component.weight)}
+                    </span>
+                    <strong>{asPoints(component.contribution)}</strong>
+                  </li>
+                ))}
+                <li className="mt-1 flex items-center justify-between gap-2 border-t border-stone-200 pt-1">
+                  <span>Volatility penalty ({asScore(selectedRunner.scoreBreakdown?.base?.volatilityRating)} × {asScore(analysis?.modelMeta?.volatilityPenaltyWeight)})</span>
+                  <strong>-{asPoints(selectedRunner.scoreBreakdown?.base?.volatilityPenalty)}</strong>
+                </li>
+              </ul>
+            </div>
+
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Final Score Equation</p>
+              <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                <li className="flex items-center justify-between gap-2">
+                  <span>Base score</span>
+                  <strong>{asPoints(selectedRunner.scoreBreakdown?.base?.baseScore)}</strong>
+                </li>
+                <li className="flex items-center justify-between gap-2">
+                  <span>Value lift (edge × 100 × {asScore(analysis?.modelMeta?.valueEdgeLiftWeight)})</span>
+                  <strong>{asPoints(selectedRunner.scoreBreakdown?.valueLift)}</strong>
+                </li>
+                <li className="flex items-center justify-between gap-2">
+                  <span>Stability bonus ({asScore(selectedRunner.scoreBreakdown?.stability?.stabilityIndex)} × {asScore(analysis?.modelMeta?.stabilityBonusWeight)})</span>
+                  <strong>{asPoints(selectedRunner.scoreBreakdown?.stabilityBonus)}</strong>
+                </li>
+                <li className="mt-1 flex items-center justify-between gap-2 border-t border-stone-200 pt-1">
+                  <span>Final score</span>
+                  <strong>{asPoints(selectedRunner.scoreBreakdown?.finalScore)}</strong>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Historical Context</p>
+              <p className="mt-2 text-xs text-stone-700">
+                Narrative: {selectedPresetHorse?.history || 'No preset narrative available.'}
+              </p>
+              <p className="mt-2 text-xs text-stone-700">
+                Recent form array: {Array.isArray(selectedRaceHorse?.recent_form) && selectedRaceHorse.recent_form.length
+                  ? selectedRaceHorse.recent_form.join(', ')
+                  : 'No stored recent form values.'}
+              </p>
+              <p className="mt-1 text-xs text-stone-700">
+                Speed figures: {Array.isArray(selectedRaceHorse?.speed_figures) && selectedRaceHorse.speed_figures.length
+                  ? selectedRaceHorse.speed_figures.join(', ')
+                  : 'No stored speed figure history.'}
+              </p>
+            </div>
+
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">What Each Metric Means</p>
+              <ul className="mt-2 grid gap-1 text-xs text-stone-700">
+                {Object.entries(METRIC_MEANINGS).map(([key, meaning]) => (
+                  <li key={key}>
+                    <strong>{METRIC_LABELS[key] || key}:</strong> {meaning}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </article>
+      ) : null}
+
+      <section className="grid gap-4 lg:grid-cols-2">
+        <article className="panel">
+          <h3 className="text-base font-semibold">Top Five Bets</h3>
+          <ul className="mt-3 grid gap-2 text-sm">
+            {(analysis?.topBets || []).map((bet) => (
+              <li key={`${bet.rank}-${bet.ticket}`} className="tile">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-semibold">
+                    #{bet.rank} {bet.type}
+                  </p>
+                  <span
+                    className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                      riskToneClasses[bet.risk] || 'bg-stone-100 text-stone-700'
+                    }`}
+                  >
+                    {bet.risk}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-stone-700">{bet.ticket}</p>
+                <p className="mt-1 text-xs text-stone-500">Stake: {bet.stake}</p>
+              </li>
+            ))}
+          </ul>
+        </article>
+
+        <article className="panel">
+          <h3 className="text-base font-semibold">Undercover Winner</h3>
+          {analysis?.undercoverWinner ? (
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm">
+              <p className="font-semibold">{analysis.undercoverWinner.name}</p>
+              <p className="mt-1 text-xs text-stone-700">
+                Odds {analysis.undercoverWinner.odds || '-'} • Model edge {asPercent(analysis.undercoverWinner.valueEdge)}
+              </p>
+              <p className="mt-2 text-xs text-stone-600">
+                Dark horse profile from value edge, late kick, and improving trend.
+              </p>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-stone-500">No sleeper available for the current field size.</p>
+          )}
+
+          <h4 className="mt-4 text-sm font-semibold text-stone-800">Algorithm vs Opposition Slips</h4>
+          <div className="mt-2 grid gap-2">
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Algorithm Slip</p>
+              <ul className="mt-2 grid gap-1 text-sm">
+                {(analysis?.topBets || []).slice(0, 3).map((bet) => (
+                  <li key={`algo-${bet.rank}`}>
+                    {bet.type}: {bet.ticket}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">Opposition Slip</p>
+              <ul className="mt-2 grid gap-1 text-sm">
+                {(analysis?.counterBets || []).slice(0, 3).map((bet) => (
+                  <li key={`counter-${bet.type}`}>
+                    {bet.type}: {bet.ticket}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </article>
+      </section>
+
       <article className="panel">
-        <h3 className="text-base font-semibold">BRISNET Intelligence</h3>
+        <h3 className="text-base font-semibold">Three-Tier Suggestions</h3>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          {(analysis?.tierSuggestions || []).map((entry) => (
+            <div
+              key={entry.tier}
+              className={`rounded-xl border p-3 text-sm ${tierToneClasses[entry.tier] || 'border-stone-200 bg-white'}`}
+            >
+              <p className="font-semibold">{entry.tier}</p>
+              <p className="mt-1">
+                {entry.horse.name} ({entry.horse.odds || '-'})
+              </p>
+              <div className="mt-2 grid gap-1 text-xs text-stone-700">
+                <p>Model: {asPercent(entry.horse.modelProbability)}</p>
+                <p>Market: {asPercent(entry.horse.marketProbability)}</p>
+                <p>Edge: {asPercent(entry.horse.valueEdge)}</p>
+              </div>
+              <p className="mt-2 text-xs text-stone-700">{entry.strategy}</p>
+            </div>
+          ))}
+        </div>
+      </article>
+
+      <article className="panel">
+        <h3 className="text-base font-semibold">Market Intelligence</h3>
         {brisnetIntel ? (
           <div className="mt-2 grid gap-2 text-sm text-stone-700">
             <p>
@@ -370,95 +773,27 @@ export default function Algorithm() {
                 ? brisnetIntel.optixSelections.join(', ')
                 : 'None returned for this race.'}
             </p>
-            <p className="text-xs text-stone-600">
-              Signal formula: baseline 50, +40 spot-play match, +25 Optix mention.
-            </p>
           </div>
         ) : (
           <p className="mt-2 text-sm text-stone-600">
-            No BRISNET payload loaded yet. Run Refresh Market to ingest latest signals.
+            {race?.brisnet_config
+              ? 'Waiting on BRISNET payload. Use Refresh Market if you want to force an immediate update.'
+              : 'No BRISNET source configured for this race preset.'}
           </p>
         )}
-      </article>
-
-      <section className="grid gap-4 lg:grid-cols-2">
-        <article className="panel">
-          <h3 className="text-base font-semibold">Top Five Bets</h3>
-          <ul className="mt-3 grid gap-2 text-sm">
-            {(analysis?.topBets || []).map((bet) => (
-              <li key={`${bet.rank}-${bet.ticket}`} className="rounded-md border border-stone-200 p-2">
-                <p>
-                  <strong>#{bet.rank}</strong> {bet.type} - {bet.ticket}
-                </p>
-                <p className="text-xs text-stone-600">
-                  {bet.risk} risk, stake {bet.stake}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </article>
-
-        <article className="panel">
-          <h3 className="text-base font-semibold">Undercover Winner</h3>
-          {analysis?.undercoverWinner ? (
-            <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
-              <p>
-                <strong>{analysis.undercoverWinner.name}</strong> ({analysis.undercoverWinner.odds})
-              </p>
-              <p>Model edge: {asPercent(analysis.undercoverWinner.valueEdge)}</p>
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-stone-500">No sleeper available for the current field size.</p>
-          )}
-        </article>
-
-        <article className="panel">
-          <h3 className="text-base font-semibold">Algorithm Slip</h3>
-          <ul className="mt-3 grid gap-2 text-sm">
-            {(analysis?.topBets || []).map((bet) => (
-              <li key={`algo-${bet.rank}`} className="rounded-md border border-stone-200 p-2">
-                {bet.type}: <strong>{bet.ticket}</strong> ({bet.stake})
-              </li>
-            ))}
-          </ul>
-        </article>
-
-        <article className="panel">
-          <h3 className="text-base font-semibold">Opposition Slip</h3>
-          <ul className="mt-3 grid gap-2 text-sm">
-            {(analysis?.counterBets || []).map((bet) => (
-              <li key={`counter-${bet.type}`} className="rounded-md border border-stone-200 p-2">
-                {bet.type}: <strong>{bet.ticket}</strong> ({bet.stake})
-              </li>
-            ))}
-          </ul>
-        </article>
-      </section>
-
-      <article className="panel">
-        <h3 className="text-base font-semibold">Three-Tier Suggestions</h3>
-        <div className="mt-3 grid gap-3 md:grid-cols-3">
-          {(analysis?.tierSuggestions || []).map((entry) => (
-            <div key={entry.tier} className="rounded-md border border-stone-200 p-3 text-sm">
-              <p className="font-semibold">{entry.tier}</p>
-              <p>
-                {entry.horse.name} ({entry.horse.odds})
-              </p>
-              <p className="text-xs text-stone-600">Model: {asPercent(entry.horse.modelProbability)}</p>
-              <p className="text-xs text-stone-600">Market: {asPercent(entry.horse.marketProbability)}</p>
-              <p className="text-xs text-stone-600">Edge: {asPercent(entry.horse.valueEdge)}</p>
-              <p className="mt-1 text-xs text-stone-700">{entry.strategy}</p>
-            </div>
-          ))}
-        </div>
       </article>
 
       <article className="panel">
         <h3 className="text-base font-semibold">Sources Used</h3>
         <ul className="mt-3 grid gap-3 text-sm">
           {(race?.sources || []).map((source) => (
-            <li key={source.url} className="rounded-md border border-stone-200 p-3">
-              <a className="font-semibold text-amber-900 underline" href={source.url} target="_blank" rel="noreferrer">
+            <li key={source.url} className="tile">
+              <a
+                className="font-semibold text-[var(--accent-main)] underline"
+                href={source.url}
+                target="_blank"
+                rel="noreferrer"
+              >
                 {source.title}
               </a>
               <p className="mt-1 text-xs text-stone-600">{source.usedFor}</p>

@@ -21,6 +21,18 @@ export const api = {
     return toJson(response);
   },
 
+  getUser: async (userId) => {
+    const response = await fetch(`/api/users/${userId}`);
+    return toJson(response);
+  },
+
+  deleteUser: async (userId) => {
+    const response = await fetch(`/api/users/${userId}`, {
+      method: 'DELETE'
+    });
+    return toJson(response);
+  },
+
   listRaces: async () => {
     const response = await fetch('/api/races');
     return toJson(response);

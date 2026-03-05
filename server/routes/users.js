@@ -18,6 +18,7 @@ const getUserByIdStmt = db.prepare(
    FROM users
    WHERE id = ?`
 );
+const deleteUserByIdStmt = db.prepare('DELETE FROM users WHERE id = ?');
 
 export const createUsersRouter = (io) => {
   const router = Router();
@@ -46,6 +47,44 @@ export const createUsersRouter = (io) => {
 
     io.emit('user_joined', { user });
     return res.status(201).json({ user });
+  });
+
+  router.get('/:userId', (req, res) => {
+    const userId = Number(req.params.userId);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id.' });
+    }
+
+    const user = getUserByIdStmt.get(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    return res.json({ user });
+  });
+
+  router.delete('/:userId', (req, res) => {
+    const userId = Number(req.params.userId);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id.' });
+    }
+
+    const user = getUserByIdStmt.get(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    if (Number(user.is_algo_bot)) {
+      return res.status(403).json({ error: 'Algorithm users cannot be deleted.' });
+    }
+
+    const result = deleteUserByIdStmt.run(userId);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    io.emit('user_removed', { userId });
+    return res.json({ userId });
   });
 
   return router;

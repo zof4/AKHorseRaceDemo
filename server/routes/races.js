@@ -348,6 +348,24 @@ export const createRacesRouter = (io) => {
       meta: preset.meta,
       raceConfig: preset.raceConfig,
       brisnetConfig: preset.brisnetConfig,
+      horses: Array.isArray(preset.horses)
+        ? preset.horses.map((horse) => ({
+            name: horse.name,
+            odds: horse.odds,
+            history: horse.history,
+            speed: horse.speed,
+            form: horse.form,
+            class: horse.class,
+            paceFit: horse.paceFit,
+            distanceFit: horse.distanceFit,
+            connections: horse.connections,
+            consistency: horse.consistency,
+            volatility: horse.volatility,
+            lateKick: horse.lateKick,
+            improvingTrend: horse.improvingTrend,
+            brisnetSignal: horse.brisnetSignal
+          }))
+        : [],
       sourceCount: Array.isArray(preset.sources) ? preset.sources.length : 0,
       horseCount: Array.isArray(preset.horses) ? preset.horses.length : 0,
       isDefault: preset.id === getDefaultPresetId()

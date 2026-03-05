@@ -180,7 +180,7 @@ export default function PlaceBet() {
   const renderHorseCheckboxes = (selectedIds, onToggle) => (
     <div className="grid gap-1 sm:grid-cols-2">
       {horses.map((horse) => (
-        <label key={horse.id} className="flex items-center gap-2 rounded border border-stone-200 px-2 py-2 text-sm">
+        <label key={horse.id} className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-2 py-2 text-sm">
           <input
             type="checkbox"
             checked={selectedIds.includes(horse.id)}
@@ -363,14 +363,21 @@ export default function PlaceBet() {
   return (
     <section className="grid gap-4">
       <article className="panel">
-        <h2 className="text-lg font-semibold">Place Bet</h2>
+        <p className="kicker">Ticket Builder</p>
+        <h2 className="page-title mt-1">Place Bet</h2>
         <p className="mt-1 text-sm text-stone-600">
           {race.name} • {race.track} • Race {race.race_number || '-'}
         </p>
-        <p className="mt-1 text-xs text-stone-500">
-          Active user: {currentUser?.name || 'Not joined'}
-          {currentUser ? ` (${formatMoney(currentUser.balance)})` : ''}
-        </p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <div className="tile">
+            <p className="tile-title">Active User</p>
+            <p className="tile-value text-base">{currentUser?.name || 'Not joined'}</p>
+          </div>
+          <div className="tile">
+            <p className="tile-title">Available Bankroll</p>
+            <p className="tile-value text-base">{currentUser ? formatMoney(currentUser.balance) : '$0.00'}</p>
+          </div>
+        </div>
         <div className="mt-3 flex gap-2">
           <Link className="btn-secondary" to={`/races/${race.id}`}>
             Back To Race
@@ -418,7 +425,7 @@ export default function PlaceBet() {
           </label>
         </div>
 
-        <div>
+        <div className="rounded-2xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
           <h3 className="mb-2 text-sm font-semibold text-stone-800">Selections</h3>
           {renderSelectionEditor()}
         </div>
@@ -433,7 +440,7 @@ export default function PlaceBet() {
         </div>
 
         {quote ? (
-          <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm">
+          <div className="rounded-2xl border border-[#ddcdb9] bg-[#fffaf3] p-3 text-sm">
             <p>
               Combinations: <strong>{quote.num_combinations}</strong> • Total Cost:{' '}
               <strong>{formatMoney(quote.total_cost)}</strong>
