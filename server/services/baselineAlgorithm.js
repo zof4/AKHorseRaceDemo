@@ -23,6 +23,11 @@ const MODEL_META = {
   stabilityBonusWeight: STABILITY_BONUS_WEIGHT
 };
 
+const normalizeHorseName = (name) =>
+  String(name ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 const numberOr = (value, fallback = 0) => {
@@ -288,10 +293,62 @@ export const buildThreeTierSuggestions = (ranked, undercoverWinner) => {
 export const runBaselineAnalysis = ({ horses, bankroll }) => {
   const ranked = rankRace(horses);
   const undercoverWinner = identifyUndercoverWinner(ranked);
+  const withoutBrisnetHorses = horses.map((horse) => ({
+    ...horse,
+    brisnetSignal: 50
+  }));
+  const rankedWithoutBrisnet = rankRace(withoutBrisnetHorses);
+
+  const withoutByName = new Map(
+    rankedWithoutBrisnet.map((horse) => [normalizeHorseName(horse.name), horse])
+  );
+
+  const horseComparisons = ranked
+    .map((horse) => {
+      const key = normalizeHorseName(horse.name);
+      const without = withoutByName.get(key);
+      if (!without) {
+        return null;
+      }
+
+      return {
+        name: horse.name,
+        withBrisnet: {
+          rank: horse.rank,
+          score: Number(horse.score.toFixed(3)),
+          modelProbability: Number(horse.modelProbability.toFixed(6))
+        },
+        withoutBrisnet: {
+          rank: without.rank,
+          score: Number(without.score.toFixed(3)),
+          modelProbability: Number(without.modelProbability.toFixed(6))
+        },
+        rankDelta: without.rank - horse.rank,
+        scoreDelta: Number((horse.score - without.score).toFixed(3)),
+        probabilityDelta: Number((horse.modelProbability - without.modelProbability).toFixed(6))
+      };
+    })
+    .filter(Boolean);
+
+  const sortedByAbsScoreDelta = [...horseComparisons].sort(
+    (left, right) => Math.abs(right.scoreDelta) - Math.abs(left.scoreDelta)
+  );
+
+  const brisnetImpact = {
+    horseComparisons,
+    topMovers: sortedByAbsScoreDelta.slice(0, 5),
+    summary: {
+      positiveScoreDeltaCount: horseComparisons.filter((entry) => entry.scoreDelta > 0).length,
+      negativeScoreDeltaCount: horseComparisons.filter((entry) => entry.scoreDelta < 0).length,
+      unchangedScoreDeltaCount: horseComparisons.filter((entry) => entry.scoreDelta === 0).length
+    }
+  };
 
   return {
     modelMeta: MODEL_META,
     ranked,
+    rankedWithoutBrisnet,
+    brisnetImpact,
     undercoverWinner,
     topBets: buildTopBets(ranked, bankroll),
     counterBets: buildCounterBets(ranked, bankroll, undercoverWinner),

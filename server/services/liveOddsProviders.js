@@ -189,7 +189,18 @@ export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
     spotPlay: null,
     optixSelections: [],
     signals: Object.fromEntries(cleanHorseNames.map((name) => [name, 50])),
-    sources: []
+    sources: [],
+    diagnostics: {
+      requests: {
+        spotPlays: null,
+        optix: null
+      },
+      matching: {
+        spotPlayMatchedFieldHorse: false,
+        optixMatchedFieldCount: 0,
+        unmatchedOptixSelections: []
+      }
+    }
   };
 
   if (!brisnetConfig || typeof brisnetConfig !== 'object') {
@@ -198,32 +209,76 @@ export const getBrisnetSignals = async (brisnetConfig, horseNames) => {
 
   const { spotPlaysUrl, optixUrl, trackName, raceNumber } = brisnetConfig;
   const normalizedRaceNumber = Number(raceNumber);
+  const normalizedFieldHorseNames = new Set(cleanHorseNames.map((name) => normalizeHorseName(name)));
 
   if (spotPlaysUrl) {
-    const spotResponse = await fetch(spotPlaysUrl, { headers: DEFAULT_HEADERS });
-    if (spotResponse.ok) {
-      const spotHtml = await spotResponse.text();
-      const lines = stripHtmlToLines(spotHtml);
-      result.spotPlay = extractBrisnetSpotPlay(
-        lines,
-        trackName ?? 'Oaklawn Park',
-        normalizedRaceNumber
-      );
-      result.sources.push(spotPlaysUrl);
+    try {
+      const spotResponse = await fetch(spotPlaysUrl, { headers: DEFAULT_HEADERS });
+      result.diagnostics.requests.spotPlays = {
+        url: spotPlaysUrl,
+        status: spotResponse.status,
+        ok: spotResponse.ok
+      };
+
+      if (spotResponse.ok) {
+        const spotHtml = await spotResponse.text();
+        const lines = stripHtmlToLines(spotHtml);
+        result.spotPlay = extractBrisnetSpotPlay(
+          lines,
+          trackName ?? 'Oaklawn Park',
+          normalizedRaceNumber
+        );
+        result.sources.push(spotPlaysUrl);
+      }
+    } catch (error) {
+      result.diagnostics.requests.spotPlays = {
+        url: spotPlaysUrl,
+        status: null,
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
     }
   }
 
   if (optixUrl) {
-    const optixResponse = await fetch(optixUrl, { headers: DEFAULT_HEADERS });
-    if (optixResponse.ok) {
-      const optixHtml = await optixResponse.text();
-      const lines = stripHtmlToLines(optixHtml);
-      result.optixSelections = extractBrisnetOptixSelections(lines, normalizedRaceNumber);
-      result.sources.push(optixUrl);
+    try {
+      const optixResponse = await fetch(optixUrl, { headers: DEFAULT_HEADERS });
+      result.diagnostics.requests.optix = {
+        url: optixUrl,
+        status: optixResponse.status,
+        ok: optixResponse.ok
+      };
+
+      if (optixResponse.ok) {
+        const optixHtml = await optixResponse.text();
+        const lines = stripHtmlToLines(optixHtml);
+        result.optixSelections = extractBrisnetOptixSelections(lines, normalizedRaceNumber);
+        result.sources.push(optixUrl);
+      }
+    } catch (error) {
+      result.diagnostics.requests.optix = {
+        url: optixUrl,
+        status: null,
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
     }
   }
 
   result.signals = computeBrisnetSignals(cleanHorseNames, result.spotPlay, result.optixSelections);
+
+  const normalizedSpotPlay = result.spotPlay ? normalizeHorseName(result.spotPlay.horseName) : '';
+  const normalizedOptixSelections = result.optixSelections.map((name) => normalizeHorseName(name));
+  const unmatchedOptixSelections = result.optixSelections.filter(
+    (name) => !normalizedFieldHorseNames.has(normalizeHorseName(name))
+  );
+
+  result.diagnostics.matching = {
+    spotPlayMatchedFieldHorse: normalizedSpotPlay ? normalizedFieldHorseNames.has(normalizedSpotPlay) : false,
+    optixMatchedFieldCount: normalizedOptixSelections.filter((name) => normalizedFieldHorseNames.has(name)).length,
+    unmatchedOptixSelections
+  };
+
   return result;
 };
 
