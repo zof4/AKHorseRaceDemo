@@ -6,6 +6,15 @@ export const raceMeta = {
   purse: "$131,000"
 };
 
+export const liveRaceConfig = {
+  trackSlug: "oaklawn-park",
+  year: 2026,
+  month: 3,
+  day: 6,
+  raceNumber: 6,
+  refreshSeconds: 60
+};
+
 export const raceSources = [
   {
     title: "BettingNews race page (Oaklawn R6, Mar 6, 2026)",

@@ -5,7 +5,7 @@ import {
   identifyUndercoverWinner,
   rankRace
 } from "./algorithmEngine.js";
-import { defaultHorses, raceMeta, raceSources } from "./data.js";
+import { defaultHorses, liveRaceConfig, raceMeta, raceSources } from "./data.js";
 
 const NUMERIC_FIELDS = [
   "speed",
@@ -30,9 +30,14 @@ const sourceListRoot = document.querySelector("#source-list");
 const bankrollInput = document.querySelector("#bankroll-input");
 const recalcButton = document.querySelector("#recalc-btn");
 const addHorseButton = document.querySelector("#add-horse-btn");
+const liveOddsButton = document.querySelector("#live-odds-btn");
+const autoRefreshToggle = document.querySelector("#auto-refresh-toggle");
+const liveOddsStatus = document.querySelector("#live-odds-status");
 const subhead = document.querySelector(".subhead");
 
 let horses = structuredClone(defaultHorses);
+let autoRefreshTimer = null;
+let liveRefreshInFlight = false;
 
 const escapeHtml = (text) =>
   String(text ?? "")
@@ -47,6 +52,11 @@ const asPercent = (value) => `${(value * 100).toFixed(1)}%`;
 const readBankroll = () => {
   const value = Number(bankrollInput.value);
   return Number.isFinite(value) && value > 0 ? value : 100;
+};
+
+const setLiveStatus = (message, isError = false) => {
+  liveOddsStatus.textContent = `Live odds status: ${message}`;
+  liveOddsStatus.style.color = isError ? "#8b1f1f" : "";
 };
 
 const createHorseRow = (horse, index) => {
@@ -94,6 +104,96 @@ const syncHorsesFromTable = () => {
       };
     })
     .filter((horse) => horse.name);
+};
+
+const applyLiveOdds = (oddsByHorse) => {
+  const normalized = new Map(
+    Object.entries(oddsByHorse).map(([name, odds]) => [name.toLowerCase().trim(), odds])
+  );
+  let changed = 0;
+
+  for (const row of [...tableBody.querySelectorAll("tr")]) {
+    const nameInput = row.querySelector('input[data-field="name"]');
+    const oddsInput = row.querySelector('input[data-field="odds"]');
+    if (!nameInput || !oddsInput) {
+      continue;
+    }
+
+    const key = nameInput.value.toLowerCase().trim();
+    const liveOdds = normalized.get(key);
+    if (liveOdds && oddsInput.value !== liveOdds) {
+      oddsInput.value = liveOdds;
+      changed += 1;
+    }
+  }
+
+  return changed;
+};
+
+const refreshLiveOdds = async () => {
+  if (liveRefreshInFlight) {
+    return;
+  }
+
+  syncHorsesFromTable();
+  if (!horses.length) {
+    setLiveStatus("no horses available to map odds.", true);
+    return;
+  }
+
+  liveRefreshInFlight = true;
+  liveOddsButton.disabled = true;
+  setLiveStatus("fetching latest odds...");
+
+  try {
+    const response = await fetch("/api/live-odds", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        raceConfig: liveRaceConfig,
+        horseNames: horses.map((horse) => horse.name)
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API status ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const updatedRows = applyLiveOdds(payload.oddsByHorse ?? {});
+    recalculate();
+
+    const fetchedAt = payload.fetchedAt ? new Date(payload.fetchedAt).toLocaleTimeString() : "now";
+    setLiveStatus(
+      `${updatedRows} odds updated from ${payload.provider ?? "provider"} at ${fetchedAt}.`
+    );
+  } catch (error) {
+    setLiveStatus(
+      `refresh failed (${error instanceof Error ? error.message : "unknown"}). Run with node server.js for live API access.`,
+      true
+    );
+  } finally {
+    liveRefreshInFlight = false;
+    liveOddsButton.disabled = false;
+  }
+};
+
+const applyAutoRefresh = () => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+
+  if (autoRefreshToggle.checked) {
+    const everyMs = Math.max(15, Number(liveRaceConfig.refreshSeconds || 60)) * 1000;
+    autoRefreshTimer = setInterval(() => {
+      refreshLiveOdds();
+    }, everyMs);
+    setLiveStatus(`auto-refresh enabled every ${Math.round(everyMs / 1000)} seconds.`);
+    refreshLiveOdds();
+  } else {
+    setLiveStatus("auto-refresh disabled.");
+  }
 };
 
 const renderTopBets = (topBets) => {
@@ -245,6 +345,8 @@ const bootstrap = () => {
 
 recalcButton.addEventListener("click", recalculate);
 addHorseButton.addEventListener("click", addHorse);
+liveOddsButton.addEventListener("click", refreshLiveOdds);
+autoRefreshToggle.addEventListener("change", applyAutoRefresh);
 tableBody.addEventListener("change", recalculate);
 bankrollInput.addEventListener("change", recalculate);
 

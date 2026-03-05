@@ -114,6 +114,16 @@ input {
   min-width: 3.7rem;
 }
 
+input[type="checkbox"] {
+  width: auto;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.live-status {
+  margin: 0.55rem 0 0.1rem;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

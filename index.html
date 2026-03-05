@@ -65,10 +65,18 @@
               Bankroll ($)
               <input id="bankroll-input" type="number" min="10" step="10" value="100" />
             </label>
+            <label>
+              Auto refresh
+              <input id="auto-refresh-toggle" type="checkbox" />
+            </label>
+            <button id="live-odds-btn" type="button">Refresh Live Odds</button>
             <button id="add-horse-btn" type="button">Add Horse</button>
             <button id="recalc-btn" type="button">Recalculate</button>
           </div>
         </div>
+        <p id="live-odds-status" class="muted live-status">
+          Live odds status: waiting for first refresh.
+        </p>
 
         <div class="table-wrap">
           <table>
