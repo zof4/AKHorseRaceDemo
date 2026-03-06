@@ -281,6 +281,26 @@ function ProbabilityBars({ modelProbability, marketProbability }) {
   );
 }
 
+function CollapsiblePanel({ title, description, open, onToggle, children, actions = null }) {
+  return (
+    <article className="panel">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold">{title}</h3>
+          {description ? <p className="text-xs text-stone-600">{description}</p> : null}
+        </div>
+        <div className="flex gap-2">
+          {actions}
+          <button className="btn-secondary" type="button" onClick={onToggle}>
+            {open ? 'Hide' : 'Show'}
+          </button>
+        </div>
+      </div>
+      {open ? <div className="mt-3">{children}</div> : null}
+    </article>
+  );
+}
+
 export default function Algorithm() {
   const { currentUser } = useUser();
   const [searchParams, setSearchParams] = useSearchParams();
