@@ -225,6 +225,120 @@ const updateRaceStatusStmt = db.prepare(
    WHERE id = ?`
 );
 
+const FINAL_RACE_STATUS = 'official';
+const AUTO_FINALIZE_LOOKBACK_DAYS = Math.max(0, Number(process.env.AUTO_FINALIZE_LOOKBACK_DAYS ?? 1));
+
+const padDatePart = (value) => String(value).padStart(2, '0');
+
+const getTodayDateKey = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${padDatePart(now.getMonth() + 1)}-${padDatePart(now.getDate())}`;
+};
+
+const readRaceDateKey = (race) => {
+  const raceConfig = jsonParseSafe(race?.race_config_json, null);
+  if (
+    raceConfig &&
+    Number.isInteger(Number(raceConfig.year)) &&
+    Number.isInteger(Number(raceConfig.month)) &&
+    Number.isInteger(Number(raceConfig.day))
+  ) {
+    return `${Number(raceConfig.year)}-${padDatePart(Number(raceConfig.month))}-${padDatePart(Number(raceConfig.day))}`;
+  }
+
+  const externalMatch = String(race?.external_id ?? '').match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (externalMatch) {
+    return `${externalMatch[1]}-${externalMatch[2]}-${externalMatch[3]}`;
+  }
+
+  const postTime = String(race?.post_time ?? '').trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(postTime)) {
+    return postTime.slice(0, 10);
+  }
+
+  return null;
+};
+
+const isRaceWithinAutoFinalizeWindow = (race) => {
+  const raceDateKey = readRaceDateKey(race);
+  if (!raceDateKey) {
+    return false;
+  }
+
+  const today = new Date(`${getTodayDateKey()}T00:00:00`);
+  const raceDay = new Date(`${raceDateKey}T00:00:00`);
+  if (Number.isNaN(today.getTime()) || Number.isNaN(raceDay.getTime())) {
+    return false;
+  }
+
+  const ageDays = Math.floor((today.getTime() - raceDay.getTime()) / 86_400_000);
+  return ageDays >= 0 && ageDays <= AUTO_FINALIZE_LOOKBACK_DAYS;
+};
+
+const shouldAutoFinalizeRace = (race, { eager = false } = {}) => {
+  if (!race) {
+    return false;
+  }
+
+  const status = String(race.status ?? '').trim().toLowerCase();
+  if (status === FINAL_RACE_STATUS) {
+    return false;
+  }
+
+  if (Array.isArray(race.results) && race.results.length) {
+    return true;
+  }
+
+  if (status === 'closed') {
+    return true;
+  }
+
+  if (eager || isRaceWithinAutoFinalizeWindow(race)) {
+    return isRaceWithinAutoFinalizeWindow(race);
+  }
+
+  return false;
+};
+
+const reconcileRaceState = async ({ io, raceId, eager = false }) => {
+  const before = hydrateRace(raceId);
+  if (!before) {
+    return { race: null, settlement: null, autoResultImport: null, warnings: [] };
+  }
+
+  let settlement = null;
+  let autoResultImport = null;
+  const warnings = [];
+
+  if (Array.isArray(before.results) && before.results.length && String(before.status ?? '').toLowerCase() !== FINAL_RACE_STATUS) {
+    updateRaceStatusStmt.run(FINAL_RACE_STATUS, raceId);
+  } else if (shouldAutoFinalizeRace(before, { eager })) {
+    try {
+      autoResultImport = await tryAutoFetchAndSettleRace({ raceId });
+      if (autoResultImport?.settled) {
+        settlement = autoResultImport.settlement;
+      }
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : 'Automatic result check failed.');
+    }
+  }
+
+  const race = hydrateRace(raceId);
+  if (!race) {
+    return { race: null, settlement, autoResultImport, warnings };
+  }
+
+  if (String(before.status ?? '').toLowerCase() !== String(race.status ?? '').toLowerCase()) {
+    io.emit('race_status', { raceId, status: String(race.status) });
+  }
+
+  if (settlement) {
+    settleAndBroadcast({ io, raceId, settlement });
+  }
+
+  return { race, settlement, autoResultImport, warnings };
+};
+
 const normalizeHorseKey = (name) =>
   String(name ?? '')
     .toLowerCase()
@@ -575,23 +689,47 @@ export const createRacesRouter = (io) => {
     }
   });
 
-  router.get('/', (_req, res) => {
-    const races = listRacesStmt.all();
-    res.json({ races });
+  router.get('/', async (_req, res) => {
+    try {
+      const listedRaces = listRacesStmt.all();
+      const candidateRaceIds = listedRaces
+        .filter((race) => shouldAutoFinalizeRace(race))
+        .map((race) => Number(race.id))
+        .filter((raceId) => Number.isInteger(raceId) && raceId > 0);
+
+      for (const raceId of candidateRaceIds) {
+        await reconcileRaceState({ io, raceId });
+      }
+
+      const races = listRacesStmt.all();
+      return res.json({ races });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Failed to load races.',
+        detail: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
   });
 
-  router.get('/:raceId(\\d+)', (req, res) => {
+  router.get('/:raceId(\\d+)', async (req, res) => {
     const raceId = Number(req.params.raceId);
     if (!Number.isInteger(raceId) || raceId <= 0) {
       return res.status(400).json({ error: 'Invalid race id.' });
     }
 
-    const race = hydrateRace(raceId);
-    if (!race) {
-      return res.status(404).json({ error: 'Race not found.' });
-    }
+    try {
+      const { race } = await reconcileRaceState({ io, raceId, eager: true });
+      if (!race) {
+        return res.status(404).json({ error: 'Race not found.' });
+      }
 
-    return res.json({ race });
+      return res.json({ race });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Failed to load race.',
+        detail: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
   });
 
   router.get('/:raceId(\\d+)/outcome-comparison', (req, res) => {

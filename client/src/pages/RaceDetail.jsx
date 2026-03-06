@@ -21,6 +21,9 @@ const poolTitle = (betType) =>
     .map((word) => word[0].toUpperCase() + word.slice(1))
     .join(' ');
 
+const FINAL_STATUSES = new Set(['official']);
+const LIVE_REFRESH_INTERVAL_MS = 15_000;
+
 export default function RaceDetail() {
   const { raceId } = useParams();
   const numericRaceId = Number(raceId);
@@ -36,6 +39,7 @@ export default function RaceDetail() {
   const [comparisonLoading, setComparisonLoading] = useState(false);
   const [comparisonError, setComparisonError] = useState('');
   const activeResultsDiagnostics = resultsDiagnostics ?? race?.results_metadata ?? null;
+  const isFinalRace = FINAL_STATUSES.has(String(race?.status ?? '').trim().toLowerCase());
 
   const load = async () => {
     if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
@@ -191,6 +195,19 @@ export default function RaceDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [numericRaceId]);
 
+  useEffect(() => {
+    if (!Number.isInteger(numericRaceId) || numericRaceId <= 0 || isFinalRace) {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      load();
+    }, LIVE_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [numericRaceId, isFinalRace]);
+
   if (loading) {
     return <section className="panel">Loading race detail...</section>;
   }
@@ -246,7 +263,7 @@ export default function RaceDetail() {
             Open In Algorithm
           </Link>
           <button className="btn-secondary" type="button" onClick={load}>
-            Refresh Pools
+            Refresh Card
           </button>
           <button className="btn-secondary" type="button" onClick={refreshOfficialResults} disabled={checkingResults}>
             {checkingResults ? 'Checking Results...' : 'Check Official Results'}
