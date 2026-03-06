@@ -4,10 +4,29 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { markAutoImportRan, shouldRunAutoImport } from '../lib/autoImportCache.js';
 import BetPlacementModal from '../components/BetPlacementModal.jsx';
+import { useUser } from '../context/UserContext.jsx';
+import socket from '../socket.js';
 
 const asPercent = (value) => `${(Number(value || 0) * 100).toFixed(1)}%`;
 const asScore = (value) => Number(value || 0).toFixed(1);
 const asPoints = (value) => Number(value || 0).toFixed(3);
+const formatMoney = (value) => `$${Number(value || 0).toFixed(2)}`;
+const formatBetType = (value) =>
+  String(value || '')
+    .replaceAll('_', ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(' ');
+const formatPercent = (value) =>
+  Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : '-';
+const formatSigned = (value) => {
+  if (!Number.isFinite(Number(value))) {
+    return '-';
+  }
+  const number = Number(value);
+  return number > 0 ? `+${number}` : String(number);
+};
 const pad = (value) => String(value).padStart(2, '0');
 const normalizeHorseName = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const normalizeText = (value) => String(value || '').trim().toLowerCase();
@@ -20,6 +39,94 @@ const formatTimestamp = (value) => {
     return 'Not yet';
   }
   return date.toLocaleString();
+};
+
+const formatOrdinal = (value) => {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) {
+    return String(value || '-');
+  }
+  const remainder100 = number % 100;
+  if (remainder100 >= 11 && remainder100 <= 13) {
+    return `${number}th`;
+  }
+  const remainder10 = number % 10;
+  if (remainder10 === 1) {
+    return `${number}st`;
+  }
+  if (remainder10 === 2) {
+    return `${number}nd`;
+  }
+  if (remainder10 === 3) {
+    return `${number}rd`;
+  }
+  return `${number}th`;
+};
+
+const formatHorseLabel = (horseId, horseNameById) => {
+  const numericId = Number(horseId);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return '-';
+  }
+  return horseNameById.get(numericId) ?? `Horse ${numericId}`;
+};
+
+const formatHorseSequence = (horseIds, horseNameById) => {
+  if (!Array.isArray(horseIds) || !horseIds.length) {
+    return '-';
+  }
+  return horseIds.map((horseId) => formatHorseLabel(horseId, horseNameById)).join(', ');
+};
+
+const buildExpandedCombinationPreview = (bet, horseNameById) => {
+  if (!Array.isArray(bet?.expanded_combinations) || !bet.expanded_combinations.length) {
+    return '';
+  }
+
+  const preview = bet.expanded_combinations
+    .slice(0, 3)
+    .map((combo) => formatHorseSequence(combo, horseNameById))
+    .join(' | ');
+
+  if (bet.expanded_combinations.length <= 3) {
+    return preview;
+  }
+
+  return `${preview} | +${bet.expanded_combinations.length - 3} more`;
+};
+
+const buildBetSelectionSummary = (bet, horseNameById) => {
+  const selections = bet?.selections ?? {};
+
+  if (Array.isArray(selections.horses) && selections.horses.length) {
+    return formatHorseSequence(selections.horses, horseNameById);
+  }
+
+  if (Number.isInteger(Number(selections.anchor_horse_id))) {
+    const anchor = formatHorseLabel(selections.anchor_horse_id, horseNameById);
+    const others = formatHorseSequence(selections.other_horse_ids, horseNameById);
+    return `${anchor} in ${formatOrdinal(selections.anchor_position)} with ${others}`;
+  }
+
+  if (Array.isArray(selections.key_horse_ids) && selections.key_horse_ids.length) {
+    const keys = formatHorseSequence(selections.key_horse_ids, horseNameById);
+    const others = formatHorseSequence(selections.other_horse_ids, horseNameById);
+    return `Keys ${keys} with ${others}`;
+  }
+
+  if (selections.positions && typeof selections.positions === 'object') {
+    const legs = Object.entries(selections.positions)
+      .map(([position, horseIds]) => [Number(position), horseIds])
+      .filter(([position, horseIds]) => Number.isInteger(position) && Array.isArray(horseIds) && horseIds.length)
+      .sort((left, right) => left[0] - right[0])
+      .map(([position, horseIds]) => `${formatOrdinal(position)}: ${formatHorseSequence(horseIds, horseNameById)}`);
+
+    if (legs.length) {
+      return legs.join(' | ');
+    }
+  }
+
+  return buildExpandedCombinationPreview(bet, horseNameById) || 'Selections unavailable.';
 };
 
 const formatTimeAgo = (value, nowMs) => {
@@ -175,6 +282,7 @@ function ProbabilityBars({ modelProbability, marketProbability }) {
 }
 
 export default function Algorithm() {
+  const { currentUser } = useUser();
   const [searchParams, setSearchParams] = useSearchParams();
   const [races, setRaces] = useState([]);
   const [race, setRace] = useState(null);
@@ -189,6 +297,15 @@ export default function Algorithm() {
   const [scratchesIntel, setScratchesIntel] = useState(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('Waiting for first refresh.');
+  const [checkingResults, setCheckingResults] = useState(false);
+  const [resultsMessage, setResultsMessage] = useState('');
+  const [resultsDiagnostics, setResultsDiagnostics] = useState(null);
+  const [raceBets, setRaceBets] = useState([]);
+  const [raceBetsLoading, setRaceBetsLoading] = useState(false);
+  const [raceBetsError, setRaceBetsError] = useState('');
+  const [outcomeComparison, setOutcomeComparison] = useState(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState('');
   const [lastLiveUpdateAt, setLastLiveUpdateAt] = useState(null);
   const [lastRefreshAttemptAt, setLastRefreshAttemptAt] = useState(null);
   const [lastRefreshSuccessAt, setLastRefreshSuccessAt] = useState(null);
@@ -273,21 +390,128 @@ export default function Algorithm() {
     autoRefresh && nextAutoRefreshAt
       ? Math.max(0, Math.ceil((nextAutoRefreshAt - nowMs) / 1000))
       : null;
+  const activeResultsDiagnostics = resultsDiagnostics ?? race?.results_metadata ?? null;
+  const hasOfficialResults = Array.isArray(race?.results) && race.results.length > 0;
+  const horseNameById = useMemo(
+    () => new Map((race?.horses || []).map((horse) => [Number(horse.id), horse.name])),
+    [race?.horses]
+  );
+  const horseByNormalizedName = useMemo(
+    () =>
+      new Map(
+        (race?.horses || []).map((horse) => [normalizeHorseName(horse.name), horse])
+      ),
+    [race?.horses]
+  );
+  const officialResultsByHorseName = useMemo(
+    () =>
+      new Map(
+        (race?.results || []).map((result) => [normalizeHorseName(result.horse_name), result])
+      ),
+    [race?.results]
+  );
+  const outcomeRowsByHorseName = useMemo(
+    () =>
+      new Map(
+        (outcomeComparison?.rows || []).map((row) => [normalizeHorseName(row.horseName), row])
+      ),
+    [outcomeComparison?.rows]
+  );
+  const raceBetSummary = useMemo(() => {
+    const totals = raceBets.reduce(
+      (acc, bet) => {
+        acc.ticketCount += 1;
+        acc.wagered += Number(bet.total_cost || 0);
+        acc.payout += Number(bet.payout || 0);
+        if (typeof bet.is_winner === 'number') {
+          acc.settledCount += 1;
+          if (Number(bet.is_winner)) {
+            acc.winningCount += 1;
+          }
+        }
+        return acc;
+      },
+      {
+        ticketCount: 0,
+        wagered: 0,
+        payout: 0,
+        settledCount: 0,
+        winningCount: 0
+      }
+    );
+
+    return {
+      ...totals,
+      openCount: Math.max(0, totals.ticketCount - totals.settledCount),
+      net: Number((totals.payout - totals.wagered).toFixed(2))
+    };
+  }, [raceBets]);
 
   const rankedWithPosts = useMemo(() => {
     if (!race || !analysis?.ranked) {
       return [];
     }
 
-    const postByHorseName = new Map(
-      race.horses.map((horse) => [normalizeHorseName(horse.name), horse.post_position || '-'])
-    );
-
     return analysis.ranked.map((runner) => ({
       ...runner,
-      postPosition: postByHorseName.get(normalizeHorseName(runner.name)) ?? '-'
+      postPosition: horseByNormalizedName.get(normalizeHorseName(runner.name))?.post_position || '-',
+      finishPosition:
+        Number(
+          officialResultsByHorseName.get(normalizeHorseName(runner.name))?.finish_position ??
+            outcomeRowsByHorseName.get(normalizeHorseName(runner.name))?.finishPosition
+        ) || null,
+      officialOdds:
+        outcomeRowsByHorseName.get(normalizeHorseName(runner.name))?.endingOdds ??
+        horseByNormalizedName.get(normalizeHorseName(runner.name))?.morning_line_odds ??
+        runner.odds ??
+        '-',
+      isOfficialWinner:
+        Number(
+          officialResultsByHorseName.get(normalizeHorseName(runner.name))?.finish_position ??
+            outcomeRowsByHorseName.get(normalizeHorseName(runner.name))?.finishPosition
+        ) === 1
     }));
-  }, [race, analysis]);
+  }, [race, analysis, horseByNormalizedName, officialResultsByHorseName, outcomeRowsByHorseName]);
+
+  const officialPodium = useMemo(
+    () =>
+      rankedWithPosts
+        .filter((runner) => Number.isInteger(runner.finishPosition) && runner.finishPosition > 0)
+        .sort((left, right) => left.finishPosition - right.finishPosition)
+        .slice(0, 3),
+    [rankedWithPosts]
+  );
+
+  const recommendationOutcomeRows = useMemo(() => {
+    const rows = [];
+    for (const entry of analysis?.tierSuggestions || []) {
+      const key = normalizeHorseName(entry.horse?.name);
+      const result = officialResultsByHorseName.get(key);
+      const horse = horseByNormalizedName.get(key);
+      rows.push({
+        label: entry.tier,
+        strategy: entry.strategy,
+        horseName: entry.horse?.name || '-',
+        finishPosition: Number(result?.finish_position) || null,
+        odds: outcomeRowsByHorseName.get(key)?.endingOdds ?? horse?.morning_line_odds ?? entry.horse?.odds ?? '-'
+      });
+    }
+
+    if (analysis?.undercoverWinner?.name) {
+      const key = normalizeHorseName(analysis.undercoverWinner.name);
+      const result = officialResultsByHorseName.get(key);
+      const horse = horseByNormalizedName.get(key);
+      rows.push({
+        label: 'Undercover Winner',
+        strategy: 'Dark horse value signal',
+        horseName: analysis.undercoverWinner.name,
+        finishPosition: Number(result?.finish_position) || null,
+        odds: outcomeRowsByHorseName.get(key)?.endingOdds ?? horse?.morning_line_odds ?? analysis.undercoverWinner.odds ?? '-'
+      });
+    }
+
+    return rows;
+  }, [analysis?.tierSuggestions, analysis?.undercoverWinner, horseByNormalizedName, officialResultsByHorseName, outcomeRowsByHorseName]);
 
   const selectedRunner = useMemo(() => {
     if (!rankedWithPosts.length) {
@@ -479,6 +703,35 @@ export default function Algorithm() {
     };
   };
 
+  const loadOutcomeComparison = async (raceId, bankrollValue = bankroll) => {
+    const { comparison } = await api.getRaceOutcomeComparison(raceId, bankrollValue);
+    return comparison ?? null;
+  };
+
+  const loadRaceBets = async (raceId) => {
+    const userId = Number(currentUser?.id ?? 0);
+    if (!Number.isInteger(raceId) || raceId <= 0 || !Number.isInteger(userId) || userId <= 0) {
+      setRaceBets([]);
+      setRaceBetsError('');
+      setRaceBetsLoading(false);
+      return [];
+    }
+
+    setRaceBetsLoading(true);
+    setRaceBetsError('');
+    try {
+      const { bets } = await api.listBets({ raceId, userId });
+      setRaceBets(Array.isArray(bets) ? bets : []);
+      return Array.isArray(bets) ? bets : [];
+    } catch (err) {
+      setRaceBets([]);
+      setRaceBetsError(err.message);
+      return [];
+    } finally {
+      setRaceBetsLoading(false);
+    }
+  };
+
   const autoImportTodayTomorrow = async () => {
     const { presets } = await api.listRacePresets();
     const targetDateKeys = new Set([todayKey, tomorrowKey]);
@@ -661,6 +914,14 @@ export default function Algorithm() {
       setAnalysis(null);
       setBrisnetIntel(null);
       setScratchesIntel(null);
+      setResultsMessage('');
+      setResultsDiagnostics(null);
+      setRaceBets([]);
+      setRaceBetsError('');
+      setRaceBetsLoading(false);
+      setOutcomeComparison(null);
+      setComparisonError('');
+      setComparisonLoading(false);
       setSelectedHorseName('');
       setSelectedJockeyName('');
       setInspectorOpen(false);
@@ -678,6 +939,7 @@ export default function Algorithm() {
         }
 
         setRace(loadedRace);
+        setResultsDiagnostics(loadedRace?.results_metadata ?? null);
         setAnalysis(nextAnalysis);
         setStatus('Race loaded.');
       } catch (err) {
@@ -706,6 +968,103 @@ export default function Algorithm() {
       setSelectedHorseName(rankedWithPosts[0].name);
     }
   }, [rankedWithPosts, selectedHorseName]);
+
+  useEffect(() => {
+    if (!race?.id) {
+      setOutcomeComparison(null);
+      setComparisonError('');
+      setComparisonLoading(false);
+      return;
+    }
+
+    if (!Array.isArray(race.results) || !race.results.length) {
+      setOutcomeComparison(null);
+      setComparisonError('');
+      setComparisonLoading(false);
+      return;
+    }
+
+    const hydrateComparison = async () => {
+      setComparisonLoading(true);
+      setComparisonError('');
+      try {
+        const comparison = await loadOutcomeComparison(Number(race.id), bankroll);
+        if (selectedRaceIdRef.current !== Number(race.id)) {
+          return;
+        }
+        setOutcomeComparison(comparison);
+      } catch (err) {
+        if (selectedRaceIdRef.current !== Number(race.id)) {
+          return;
+        }
+        setOutcomeComparison(null);
+        setComparisonError(err.message);
+      } finally {
+        if (selectedRaceIdRef.current === Number(race.id)) {
+          setComparisonLoading(false);
+        }
+      }
+    };
+
+    hydrateComparison();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [race?.id, race?.results?.length, bankroll]);
+
+  useEffect(() => {
+    if (!race?.id) {
+      setRaceBets([]);
+      setRaceBetsError('');
+      setRaceBetsLoading(false);
+      return;
+    }
+
+    loadRaceBets(Number(race.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [race?.id, currentUser?.id]);
+
+  useEffect(() => {
+    const raceId = Number(race?.id ?? 0);
+    const userId = Number(currentUser?.id ?? 0);
+    if (!Number.isInteger(raceId) || raceId <= 0 || !Number.isInteger(userId) || userId <= 0) {
+      return undefined;
+    }
+
+    const refreshBets = () => {
+      void loadRaceBets(raceId);
+    };
+
+    const onBetPlaced = (payload) => {
+      if (Number(payload?.bet?.race_id) !== raceId || Number(payload?.bet?.user_id) !== userId) {
+        return;
+      }
+      refreshBets();
+    };
+
+    const onRaceResults = (payload) => {
+      if (Number(payload?.raceId) !== raceId) {
+        return;
+      }
+      refreshBets();
+    };
+
+    const onBetsSettled = (payload) => {
+      if (Number(payload?.raceId) !== raceId) {
+        return;
+      }
+      refreshBets();
+    };
+
+    socket.on('bet_placed', onBetPlaced);
+    socket.on('race_results', onRaceResults);
+    socket.on('bets_settled', onBetsSettled);
+
+    return () => {
+      socket.off('bet_placed', onBetPlaced);
+      socket.off('race_results', onRaceResults);
+      socket.off('bets_settled', onBetsSettled);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [race?.id, currentUser?.id]);
 
   useEffect(() => {
     if (!jockeyAnalysis.length) {
@@ -847,7 +1206,9 @@ export default function Algorithm() {
       }
 
       setRace(loadedRace);
+      setResultsDiagnostics(loadedRace?.results_metadata ?? null);
       setAnalysis(payload.analysis ?? null);
+      await loadRaceBets(raceId);
       setBrisnetIntel(payload.market?.brisnet ?? null);
       setScratchesIntel(payload.market?.scratches ?? null);
       setLastLiveUpdateAt(payload.fetchedAt || new Date().toISOString());
@@ -880,6 +1241,81 @@ export default function Algorithm() {
     } finally {
       if (requestId === marketRefreshRequestIdRef.current) {
         setRefreshingMarket(false);
+      }
+    }
+  };
+
+  const syncOfficialResults = async () => {
+    if (!selectedRace || checkingResults || raceSyncing) {
+      return;
+    }
+
+    const raceId = Number(selectedRace.id);
+    setCheckingResults(true);
+    setError('');
+    setResultsMessage('');
+    setStatus('Checking official results...');
+
+    try {
+      const payload = await api.refreshRaceResults(raceId);
+      const loadedRace = await loadRaceDetail(raceId);
+      if (selectedRaceIdRef.current !== raceId) {
+        return;
+      }
+
+      let nextAnalysis = analysis;
+      try {
+        nextAnalysis = await runAnalysis(raceId, bankroll);
+      } catch (analysisError) {
+        setError(analysisError.message);
+      }
+
+      setRace(loadedRace);
+      setResultsDiagnostics(
+        payload?.autoResultImport?.metadata ??
+          (payload?.autoResultImport
+            ? {
+                provider: payload.autoResultImport.provider ?? null,
+                fetchedAt: payload.autoResultImport.fetchedAt ?? null,
+                sourceUrl: payload.autoResultImport.sourceUrl ?? null,
+                diagnostics: payload.autoResultImport.diagnostics ?? null
+              }
+            : loadedRace?.results_metadata ?? null)
+      );
+      if (nextAnalysis) {
+        setAnalysis(nextAnalysis);
+      }
+      await loadRaceBets(raceId);
+
+      if (payload?.settlement) {
+        const providerLabel = payload?.autoResultImport?.provider ? ` from ${payload.autoResultImport.provider}` : '';
+        const settledCount = Number(payload.settlement?.settledCount || 0);
+        const message = `Official results received${providerLabel}; settled ${settledCount} bet${settledCount === 1 ? '' : 's'}.`;
+        setResultsMessage(message);
+        setStatus(message);
+        setLastRefreshSummary((prev) => ({
+          odds: Number(prev?.odds || 0),
+          signals: Number(prev?.signals || 0),
+          scratches: Number(prev?.scratches || 0),
+          warnings: Number(prev?.warnings || 0),
+          settledBets: settledCount
+        }));
+      } else if (payload?.autoResultImport?.message) {
+        setResultsMessage(payload.autoResultImport.message);
+        setStatus(payload.autoResultImport.message);
+      } else {
+        setResultsMessage('No official finish posted yet.');
+        setStatus('No official finish posted yet.');
+      }
+    } catch (err) {
+      if (selectedRaceIdRef.current !== raceId) {
+        return;
+      }
+      setError(err.message);
+      setStatus('Official results check failed.');
+    } finally {
+      if (selectedRaceIdRef.current === raceId) {
+        setCheckingResults(false);
       }
     }
   };
@@ -922,6 +1358,32 @@ export default function Algorithm() {
       setStatus('Analysis recalculated.');
     } catch (err) {
       setError(err.message);
+    }
+  };
+
+  const refreshOutcomeComparison = async () => {
+    if (!race?.id || !Array.isArray(race.results) || !race.results.length) {
+      return;
+    }
+
+    setComparisonLoading(true);
+    setComparisonError('');
+    try {
+      const comparison = await loadOutcomeComparison(Number(race.id), bankroll);
+      if (selectedRaceIdRef.current !== Number(race.id)) {
+        return;
+      }
+      setOutcomeComparison(comparison);
+    } catch (err) {
+      if (selectedRaceIdRef.current !== Number(race.id)) {
+        return;
+      }
+      setOutcomeComparison(null);
+      setComparisonError(err.message);
+    } finally {
+      if (selectedRaceIdRef.current === Number(race.id)) {
+        setComparisonLoading(false);
+      }
     }
   };
 
@@ -1400,6 +1862,132 @@ export default function Algorithm() {
   return (
     <>
       <section className="grid gap-4">
+      {hasOfficialResults ? (
+        <article className="panel">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="kicker">Post-Race Recap</p>
+              <h2 className="page-title mt-1">{race?.name || 'Race Summary'}</h2>
+              <p className="mt-1 text-sm text-stone-600">
+                Official finish, winner odds, model outcome, and recommendation review for this race.
+              </p>
+            </div>
+            <button className="btn-secondary" type="button" onClick={refreshOutcomeComparison} disabled={comparisonLoading}>
+              {comparisonLoading ? 'Updating...' : 'Refresh Recap'}
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+            <div className="tile">
+              <p className="tile-title">Winner</p>
+              <p className="tile-value text-sm">{outcomeComparison?.summary?.winnerHorse || officialPodium[0]?.name || '-'}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Winner Odds</p>
+              <p className="tile-value text-base">{outcomeComparison?.summary?.winnerEndingOdds || officialPodium[0]?.officialOdds || '-'}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Model Top Pick</p>
+              <p className="tile-value text-sm">{outcomeComparison?.summary?.modelTopPick || rankedWithPosts[0]?.name || '-'}</p>
+              <p className="mt-1 text-xs text-stone-600">
+                Finished {formatOrdinal(outcomeComparison?.summary?.modelTopPickFinish || rankedWithPosts[0]?.finishPosition)}
+              </p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Exacta Order</p>
+              <p
+                className={`tile-value text-base ${
+                  outcomeComparison?.summary?.exactaOrderHit ? 'text-emerald-700' : 'text-rose-700'
+                }`}
+              >
+                {outcomeComparison?.summary?.exactaOrderHit ? 'Hit' : 'Miss'}
+              </p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Trifecta Order</p>
+              <p
+                className={`tile-value text-base ${
+                  outcomeComparison?.summary?.trifectaOrderHit ? 'text-emerald-700' : 'text-rose-700'
+                }`}
+              >
+                {outcomeComparison?.summary?.trifectaOrderHit ? 'Hit' : 'Miss'}
+              </p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">{currentUser ? `${currentUser.name} Net` : 'Settled Bets'}</p>
+              <p
+                className={`tile-value text-base ${
+                  currentUser
+                    ? raceBetSummary.net > 0
+                      ? 'text-emerald-700'
+                      : raceBetSummary.net < 0
+                        ? 'text-rose-700'
+                        : ''
+                    : ''
+                }`}
+              >
+                {currentUser ? formatMoney(raceBetSummary.net) : Number(lastRefreshSummary?.settledBets || 0)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Official Podium</p>
+              <ul className="mt-2 grid gap-2">
+                {officialPodium.map((runner) => (
+                  <li key={`podium-${runner.name}`} className="rounded-xl border border-stone-200 bg-[#fffaf3] px-3 py-2 text-sm">
+                    <p className="font-semibold text-stone-900">
+                      {formatOrdinal(runner.finishPosition)} {runner.name}
+                    </p>
+                    <p className="mt-1 text-xs text-stone-600">
+                      Post {runner.postPosition} • Odds {runner.officialOdds || '-'} • Model #{runner.rank}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Model Top Three</p>
+              <ul className="mt-2 grid gap-2">
+                {rankedWithPosts.slice(0, 3).map((runner) => (
+                  <li key={`model-top-${runner.name}`} className="rounded-xl border border-stone-200 bg-[#fffaf3] px-3 py-2 text-sm">
+                    <p className="font-semibold text-stone-900">
+                      Model #{runner.rank} {runner.name}
+                    </p>
+                    <p className="mt-1 text-xs text-stone-600">
+                      Finished {formatOrdinal(runner.finishPosition)} • Odds {runner.officialOdds || '-'} • Edge {asPercent(runner.valueEdge)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Suggestion Outcomes</p>
+              {recommendationOutcomeRows.length ? (
+                <ul className="mt-2 grid gap-2">
+                  {recommendationOutcomeRows.map((entry) => (
+                    <li key={`${entry.label}-${entry.horseName}`} className="rounded-xl border border-stone-200 bg-[#fffaf3] px-3 py-2 text-sm">
+                      <p className="font-semibold text-stone-900">
+                        {entry.label}: {entry.horseName}
+                      </p>
+                      <p className="mt-1 text-xs text-stone-600">
+                        Finished {formatOrdinal(entry.finishPosition)} • Odds {entry.odds || '-'}
+                      </p>
+                      <p className="mt-1 text-xs text-stone-500">{entry.strategy}</p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs text-stone-600">Recommendation outcomes will populate when race suggestions are available.</p>
+              )}
+            </div>
+          </div>
+        </article>
+      ) : null}
+
       <article className="panel">
         <p className="kicker">Model Control</p>
         <h2 className="page-title mt-1">Algorithm Systems</h2>
@@ -1494,6 +2082,9 @@ export default function Algorithm() {
           <button className="btn-secondary" type="button" onClick={refreshMarket} disabled={refreshingMarket}>
             {refreshingMarket ? 'Refreshing...' : 'Refresh Market'}
           </button>
+          <button className="btn-secondary" type="button" onClick={syncOfficialResults} disabled={checkingResults || !selectedRace}>
+            {checkingResults ? 'Checking Results...' : 'Check Official Results'}
+          </button>
           <button className="btn-primary" type="button" onClick={onRecalculate}>
             Recalculate
           </button>
@@ -1510,6 +2101,7 @@ export default function Algorithm() {
         </div>
 
         <p className="mt-2 text-sm text-stone-600">{status}</p>
+        {resultsMessage ? <p className="mt-1 text-xs text-emerald-700">{resultsMessage}</p> : null}
         <p className="mt-1 text-xs text-stone-500">
           Live refresh runs every 15 seconds when auto refresh is enabled. Last update: {formatTimestamp(lastLiveUpdateAt)}.
         </p>
@@ -1523,7 +2115,8 @@ export default function Algorithm() {
         {lastRefreshSummary ? (
           <p className="mt-1 text-xs text-stone-500">
             Last payload changes: odds {lastRefreshSummary.odds}, signals {lastRefreshSummary.signals}, scratches{' '}
-            {lastRefreshSummary.scratches}, warnings {lastRefreshSummary.warnings}.
+            {lastRefreshSummary.scratches}, warnings {lastRefreshSummary.warnings}, settled bets{' '}
+            {Number(lastRefreshSummary.settledBets || 0)}.
           </p>
         ) : null}
         {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
@@ -1582,20 +2175,391 @@ export default function Algorithm() {
                       <p className="text-xs text-stone-500">
                         Fair odds: {runner.fairOdds?.text || 'N/A'} • Market implied: {runner.marketFairOdds?.text || 'N/A'}
                       </p>
+                      {runner.finishPosition ? (
+                        <p className="text-xs text-stone-500">
+                          Official finish: {formatOrdinal(runner.finishPosition)} • Official odds {runner.officialOdds || '-'}
+                        </p>
+                      ) : null}
                     </div>
-                    <span
-                      className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
-                        Number(runner.valueEdge) >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                      }`}
-                    >
-                      Edge {asPercent(runner.valueEdge)}
-                    </span>
+                    <div className="flex flex-col items-end gap-1">
+                      {runner.finishPosition ? (
+                        <span
+                          className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                            runner.isOfficialWinner ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'
+                          }`}
+                        >
+                          {runner.isOfficialWinner ? 'Winner' : `${formatOrdinal(runner.finishPosition)} Official`}
+                        </span>
+                      ) : null}
+                      <span
+                        className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                          Number(runner.valueEdge) >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                        }`}
+                      >
+                        Edge {asPercent(runner.valueEdge)}
+                      </span>
+                    </div>
                   </div>
                   <ProbabilityBars modelProbability={runner.modelProbability} marketProbability={runner.marketProbability} />
                 </button>
               );
             })}
           </div>
+        </article>
+      ) : null}
+
+      {race ? (
+        <article className="panel">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">My Bets For This Race</h3>
+              <p className="text-xs text-stone-600">Race-specific tickets, settlement status, and payout comparison for the active user.</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => void loadRaceBets(Number(race.id))}
+                disabled={raceBetsLoading || !currentUser}
+              >
+                {raceBetsLoading ? 'Refreshing Bets...' : 'Refresh Bets'}
+              </button>
+              <Link className="btn-secondary" to={`/races/${race.id}/bet`}>
+                Bet This Race
+              </Link>
+            </div>
+          </div>
+
+          {!currentUser ? (
+            <p className="mt-3 text-sm text-stone-600">Select a user to track race tickets and payouts.</p>
+          ) : (
+            <>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="tile">
+                  <p className="tile-title">Tickets</p>
+                  <p className="tile-value text-base">{raceBetSummary.ticketCount}</p>
+                </div>
+                <div className="tile">
+                  <p className="tile-title">Wagered</p>
+                  <p className="tile-value text-base">{formatMoney(raceBetSummary.wagered)}</p>
+                </div>
+                <div className="tile">
+                  <p className="tile-title">Return</p>
+                  <p className="tile-value text-base">{formatMoney(raceBetSummary.payout)}</p>
+                </div>
+                <div className="tile">
+                  <p className="tile-title">Settled</p>
+                  <p className="tile-value text-base">
+                    {raceBetSummary.settledCount}/{raceBetSummary.ticketCount}
+                  </p>
+                </div>
+                <div className="tile">
+                  <p className="tile-title">Net</p>
+                  <p
+                    className={`tile-value text-base ${
+                      raceBetSummary.net > 0 ? 'text-emerald-700' : raceBetSummary.net < 0 ? 'text-rose-700' : ''
+                    }`}
+                  >
+                    {formatMoney(raceBetSummary.net)}
+                  </p>
+                </div>
+              </div>
+
+              <p className="mt-3 text-xs text-stone-500">
+                {currentUser.name} has {raceBetSummary.winningCount} winning ticket
+                {raceBetSummary.winningCount === 1 ? '' : 's'} and {raceBetSummary.openCount} still open for this race.
+              </p>
+
+              {raceBetsError ? <p className="mt-2 text-sm text-rose-700">{raceBetsError}</p> : null}
+
+              {!raceBetsLoading && !raceBetsError && !raceBets.length ? (
+                <p className="mt-3 text-sm text-stone-600">No bets placed by {currentUser.name} for this race.</p>
+              ) : null}
+
+              {raceBets.length ? (
+                <ul className="mt-3 grid gap-3">
+                  {raceBets.map((bet) => {
+                    const isSettled = typeof bet.is_winner === 'number';
+                    const isWinner = isSettled && Boolean(Number(bet.is_winner));
+                    const selectionSummary = buildBetSelectionSummary(bet, horseNameById);
+                    const combinationPreview = buildExpandedCombinationPreview(bet, horseNameById);
+
+                    return (
+                      <li key={bet.id} className="tile">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-stone-900">
+                              {formatBetType(bet.bet_type)}
+                              {bet.bet_modifier ? ` • ${formatBetType(bet.bet_modifier)}` : ''}
+                            </p>
+                            <p className="text-xs text-stone-600">Placed {formatTimestamp(bet.created_at)}</p>
+                          </div>
+                          <span
+                            className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                              isSettled
+                                ? isWinner
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-rose-100 text-rose-800'
+                                : 'bg-stone-200 text-stone-700'
+                            }`}
+                          >
+                            {isSettled ? (isWinner ? 'WIN' : 'LOSS') : 'OPEN'}
+                          </span>
+                        </div>
+
+                        <p className="mt-2 text-sm text-stone-800">{selectionSummary}</p>
+                        {combinationPreview && combinationPreview !== selectionSummary ? (
+                          <p className="mt-1 text-xs text-stone-500">Combos: {combinationPreview}</p>
+                        ) : null}
+
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                          <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                            <p className="tile-title">Stake</p>
+                            <p className="tile-value text-base">{formatMoney(bet.total_cost)}</p>
+                          </div>
+                          <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                            <p className="tile-title">Base</p>
+                            <p className="tile-value text-base">{formatMoney(bet.base_amount)}</p>
+                          </div>
+                          <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                            <p className="tile-title">Combos</p>
+                            <p className="tile-value text-base">{Number(bet.num_combinations || 0)}</p>
+                          </div>
+                          <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                            <p className="tile-title">Payout</p>
+                            <p className="tile-value text-base">{formatMoney(bet.payout)}</p>
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : null}
+            </>
+          )}
+        </article>
+      ) : null}
+
+      {Array.isArray(race?.results) && race.results.length ? (
+        <article className="panel">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-base font-semibold">Detailed Finish Review</h3>
+              <p className="text-xs text-stone-600">Full finish order and horse-by-horse model-vs-actual review.</p>
+            </div>
+            <button className="btn-secondary" type="button" onClick={refreshOutcomeComparison} disabled={comparisonLoading}>
+              {comparisonLoading ? 'Updating...' : 'Refresh Comparison'}
+            </button>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="tile">
+              <p className="tile-title">Race Status</p>
+              <p className="tile-value text-base capitalize">{race.status}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Official Results</p>
+              <p className="tile-value text-base">{race.results.length}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Winner</p>
+              <p className="tile-value text-sm">{race.results.find((entry) => Number(entry.finish_position) === 1)?.horse_name || '-'}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Settled Bets</p>
+              <p className="tile-value text-base">{Number(lastRefreshSummary?.settledBets || 0)}</p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,0.9fr),minmax(0,1.1fr)]">
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Official Finish</p>
+              <ul className="mt-2 grid gap-2">
+                {race.results.map((result) => (
+                  <li key={`${result.horse_id}-${result.finish_position}`} className="flex items-center justify-between gap-2 rounded-xl border border-stone-200 bg-[#fffaf3] px-3 py-2 text-sm">
+                    <div>
+                      <p className="font-semibold text-stone-900">
+                        {result.finish_position}. {result.horse_name}
+                      </p>
+                      <p className="text-xs text-stone-600">Post {result.post_position || '-'}</p>
+                    </div>
+                    <button
+                      className="btn-secondary px-3 py-1.5 text-xs"
+                      type="button"
+                      onClick={() => openInspectorForHorse(result.horse_name)}
+                    >
+                      Inspect
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="tile">
+              <p className="text-sm font-semibold text-stone-900">Model Vs Actual</p>
+              {comparisonLoading ? <p className="mt-2 text-xs text-stone-600">Building comparison...</p> : null}
+              {comparisonError ? <p className="mt-2 text-xs text-rose-700">{comparisonError}</p> : null}
+
+              {outcomeComparison ? (
+                <>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                      <p className="tile-title">Model Top Pick</p>
+                      <p className="tile-value text-base">{outcomeComparison.summary?.modelTopPick || '-'}</p>
+                      <p className="mt-1 text-xs text-stone-600">
+                        Finished {outcomeComparison.summary?.modelTopPickFinish ?? '-'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                      <p className="tile-title">Winner Model Rank</p>
+                      <p className="tile-value text-base">{outcomeComparison.summary?.winnerModelRank ?? '-'}</p>
+                      <p className="mt-1 text-xs text-stone-600">
+                        Odds {outcomeComparison.summary?.winnerEndingOdds || '-'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                      <p className="tile-title">Exacta Order</p>
+                      <p
+                        className={`tile-value text-base ${
+                          outcomeComparison.summary?.exactaOrderHit ? 'text-emerald-700' : 'text-rose-700'
+                        }`}
+                      >
+                        {outcomeComparison.summary?.exactaOrderHit ? 'Hit' : 'Miss'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                      <p className="tile-title">MAE</p>
+                      <p className="tile-value text-base">
+                        {Number.isFinite(Number(outcomeComparison.summary?.meanAbsoluteRankError))
+                          ? Number(outcomeComparison.summary.meanAbsoluteRankError).toFixed(3)
+                          : '-'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2">
+                    {Array.isArray(outcomeComparison.rows)
+                      ? outcomeComparison.rows.map((row) => (
+                          <div key={row.horseId} className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="text-sm font-semibold text-stone-900">
+                                  {row.finishPosition}. {row.horseName}
+                                </p>
+                                <p className="text-xs text-stone-600">
+                                  Model #{row.modelRank ?? '-'} • Delta {formatSigned(row.rankDelta)} • Ending odds{' '}
+                                  {row.endingOdds || '-'}
+                                </p>
+                              </div>
+                              <p className="rounded-full bg-stone-100 px-2 py-1 text-[11px] font-semibold text-stone-700">
+                                Model win {formatPercent(row.modelWinProbability)}
+                              </p>
+                            </div>
+                          </div>
+                        ))
+                      : null}
+                  </div>
+                </>
+              ) : !comparisonLoading && !comparisonError ? (
+                <p className="mt-2 text-xs text-stone-600">Comparison will load once official results are available.</p>
+              ) : null}
+            </div>
+          </div>
+        </article>
+      ) : race?.status === 'official' ? (
+        <article className="panel">
+          <h3 className="text-base font-semibold">Detailed Finish Review</h3>
+          <p className="mt-2 text-sm text-stone-600">Race is official, but the finish order has not been synced into the algorithm workspace yet.</p>
+        </article>
+      ) : null}
+
+      {activeResultsDiagnostics ? (
+        <article className="panel">
+          <h3 className="text-base font-semibold">Results Diagnostics</h3>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="tile">
+              <p className="tile-title">Provider</p>
+              <p className="tile-value text-base">{activeResultsDiagnostics.provider || '-'}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Fetched</p>
+              <p className="tile-value text-sm">{formatTimestamp(activeResultsDiagnostics.fetchedAt)}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Extraction</p>
+              <p className="tile-value text-sm">
+                {activeResultsDiagnostics.diagnostics?.extraction?.label ||
+                  activeResultsDiagnostics.diagnostics?.extraction?.method ||
+                  '-'}
+              </p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Attempts</p>
+              <p className="tile-value text-base">
+                {Array.isArray(activeResultsDiagnostics.diagnostics?.attempts)
+                  ? activeResultsDiagnostics.diagnostics.attempts.length
+                  : '-'}
+              </p>
+            </div>
+          </div>
+
+          {activeResultsDiagnostics.sourceUrl ? (
+            <p className="mt-3 text-xs text-stone-600">
+              Source:{' '}
+              <a
+                className="font-semibold text-[var(--accent-main)] underline"
+                href={activeResultsDiagnostics.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {activeResultsDiagnostics.sourceUrl}
+              </a>
+            </p>
+          ) : null}
+
+          {activeResultsDiagnostics.diagnostics?.parseCandidates ? (
+            <div className="mt-3 rounded-xl border border-stone-200 bg-stone-50 p-3 text-xs text-stone-700">
+              <p className="font-semibold">Parser candidates</p>
+              <ul className="mt-2 grid gap-1">
+                {Object.entries(activeResultsDiagnostics.diagnostics.parseCandidates).map(([key, value]) => (
+                  <li key={`parse-${key}`} className="flex items-center justify-between gap-2">
+                    <span>{key}</span>
+                    <strong>{Number(value || 0)}</strong>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {Array.isArray(activeResultsDiagnostics.diagnostics?.attempts) &&
+          activeResultsDiagnostics.diagnostics.attempts.length ? (
+            <div className="mt-3 grid gap-2">
+              {activeResultsDiagnostics.diagnostics.attempts.map((attempt, index) => (
+                <div key={`attempt-${attempt.provider}-${index}`} className="rounded-xl border border-stone-200 bg-[#fffaf3] p-3 text-xs text-stone-700">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold text-stone-900">{attempt.provider || 'Unknown provider'}</p>
+                    <span
+                      className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                        attempt.found ? 'bg-emerald-100 text-emerald-800' : 'bg-stone-200 text-stone-700'
+                      }`}
+                    >
+                      {attempt.found ? 'Matched' : 'No result'}
+                    </span>
+                  </div>
+                  <p className="mt-1">Extraction: {attempt.diagnostics?.extraction?.label || attempt.diagnostics?.extraction?.method || '-'}</p>
+                  <p className="mt-1">Fetched: {formatTimestamp(attempt.fetchedAt)}</p>
+                  {attempt.sourceUrl ? (
+                    <p className="mt-1 break-all">
+                      URL:{' '}
+                      <a className="font-semibold text-[var(--accent-main)] underline" href={attempt.sourceUrl} target="_blank" rel="noreferrer">
+                        {attempt.sourceUrl}
+                      </a>
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </article>
       ) : null}
 
@@ -1894,6 +2858,9 @@ export default function Algorithm() {
         onClose={() => setBetModalOpen(false)}
         onBetPlaced={(result) => {
           setStatus(`Bet placed from algorithm modal. New balance: $${Number(result.user_balance || 0).toFixed(2)}.`);
+          if (race?.id) {
+            void loadRaceBets(Number(race.id));
+          }
         }}
       />
     </>

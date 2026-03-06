@@ -31,9 +31,11 @@ export default function RaceDetail() {
   const [error, setError] = useState('');
   const [checkingResults, setCheckingResults] = useState(false);
   const [resultsMessage, setResultsMessage] = useState('');
+  const [resultsDiagnostics, setResultsDiagnostics] = useState(null);
   const [outcomeComparison, setOutcomeComparison] = useState(null);
   const [comparisonLoading, setComparisonLoading] = useState(false);
   const [comparisonError, setComparisonError] = useState('');
+  const activeResultsDiagnostics = resultsDiagnostics ?? race?.results_metadata ?? null;
 
   const load = async () => {
     if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
@@ -47,6 +49,7 @@ export default function RaceDetail() {
     try {
       const [{ race }, { pools }] = await Promise.all([api.getRace(numericRaceId), api.getPools(numericRaceId)]);
       setRace(race);
+      setResultsDiagnostics(race?.results_metadata ?? null);
       setPools(pools);
     } catch (err) {
       setError(err.message);
@@ -65,6 +68,17 @@ export default function RaceDetail() {
     setResultsMessage('');
     try {
       const payload = await api.refreshRaceResults(numericRaceId);
+      setResultsDiagnostics(
+        payload?.autoResultImport?.metadata ??
+          (payload?.autoResultImport
+            ? {
+                provider: payload.autoResultImport.provider ?? null,
+                fetchedAt: payload.autoResultImport.fetchedAt ?? null,
+                sourceUrl: payload.autoResultImport.sourceUrl ?? null,
+                diagnostics: payload.autoResultImport.diagnostics ?? null
+              }
+            : null)
+      );
       if (payload?.settlement) {
         const providerLabel = payload?.autoResultImport?.provider ? ` from ${payload.autoResultImport.provider}` : '';
         setResultsMessage(`Official results received${providerLabel} and bets were settled.`);
@@ -266,6 +280,66 @@ export default function RaceDetail() {
         <article className="panel">
           <h3 className="text-base font-semibold">Official Finish</h3>
           <p className="mt-2 text-sm text-stone-600">Race is official, but finish order has not been synced yet.</p>
+        </article>
+      ) : null}
+
+      {activeResultsDiagnostics ? (
+        <article className="panel">
+          <h3 className="text-base font-semibold">Results Diagnostics</h3>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="tile">
+              <p className="tile-title">Provider</p>
+              <p className="tile-value text-base">{activeResultsDiagnostics.provider || '-'}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Fetched</p>
+              <p className="tile-value text-sm">{formatTimestamp(activeResultsDiagnostics.fetchedAt)}</p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Extraction</p>
+              <p className="tile-value text-sm">
+                {activeResultsDiagnostics.diagnostics?.extraction?.label ||
+                  activeResultsDiagnostics.diagnostics?.extraction?.method ||
+                  '-'}
+              </p>
+            </div>
+            <div className="tile">
+              <p className="tile-title">Attempts</p>
+              <p className="tile-value text-base">
+                {Array.isArray(activeResultsDiagnostics.diagnostics?.attempts)
+                  ? activeResultsDiagnostics.diagnostics.attempts.length
+                  : '-'}
+              </p>
+            </div>
+          </div>
+
+          {activeResultsDiagnostics.sourceUrl ? (
+            <p className="mt-3 text-xs text-stone-600">
+              Source:{' '}
+              <a
+                className="font-semibold text-[var(--accent-main)] underline"
+                href={activeResultsDiagnostics.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {activeResultsDiagnostics.sourceUrl}
+              </a>
+            </p>
+          ) : null}
+
+          {activeResultsDiagnostics.diagnostics?.parseCandidates ? (
+            <div className="mt-3 rounded-xl border border-stone-200 bg-stone-50 p-3 text-xs text-stone-700">
+              <p className="font-semibold">Parser candidates</p>
+              <ul className="mt-2 grid gap-1">
+                {Object.entries(activeResultsDiagnostics.diagnostics.parseCandidates).map(([key, value]) => (
+                  <li key={`parse-${key}`} className="flex items-center justify-between gap-2">
+                    <span>{key}</span>
+                    <strong>{Number(value || 0)}</strong>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </article>
       ) : null}
 

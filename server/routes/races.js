@@ -64,6 +64,7 @@ const getRaceStmt = db.prepare(
       race_config_json,
       brisnet_config_json,
       sources_json,
+      results_metadata_json,
       created_at
    FROM races
    WHERE id = ?`
@@ -276,6 +277,7 @@ const hydrateRace = (raceId) => {
     race_config: jsonParseSafe(race.race_config_json, null),
     brisnet_config: jsonParseSafe(race.brisnet_config_json, null),
     sources: jsonParseSafe(race.sources_json, []),
+    results_metadata: jsonParseSafe(race.results_metadata_json, null),
     horses,
     results
   };

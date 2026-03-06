@@ -23,7 +23,8 @@ const getRaceStmt = db.prepare(
       status,
       takeout_pct,
       external_id,
-      race_config_json
+      race_config_json,
+      results_metadata_json
    FROM races
    WHERE id = ?`
 );
@@ -52,6 +53,12 @@ const insertRaceResultStmt = db.prepare(
 const markRaceOfficialStmt = db.prepare(
   `UPDATE races
    SET status = 'official'
+   WHERE id = ?`
+);
+
+const updateRaceResultsMetadataStmt = db.prepare(
+  `UPDATE races
+   SET results_metadata_json = ?
    WHERE id = ?`
 );
 
@@ -463,6 +470,139 @@ const parseFinishersFromWagerWinners = (html, raceNumber) => {
   }));
 };
 
+const normalizeParsedFinishers = (parsed, defaultMethod = 'unknown') => {
+  if (Array.isArray(parsed)) {
+    return {
+      finishers: parsed,
+      extraction: {
+        method: defaultMethod
+      },
+      candidates: null
+    };
+  }
+
+  if (parsed && typeof parsed === 'object') {
+    return {
+      finishers: Array.isArray(parsed.finishers) ? parsed.finishers : [],
+      extraction:
+        parsed.extraction && typeof parsed.extraction === 'object'
+          ? parsed.extraction
+          : {
+              method: defaultMethod
+            },
+      candidates: parsed.candidates && typeof parsed.candidates === 'object' ? parsed.candidates : null
+    };
+  }
+
+  return {
+    finishers: [],
+    extraction: {
+      method: defaultMethod
+    },
+    candidates: null
+  };
+};
+
+const extractOaklawnRaceSectionHtml = (html, raceNumber) => {
+  const match = String(html ?? '').match(
+    new RegExp(
+      `<div class="eb-race">[\\s\\S]*?<h3>\\s*Race\\s*${raceNumber}\\s*<\\/h3>[\\s\\S]*?(?=<div class="eb-race">|<\\/section>)`,
+      'i'
+    )
+  );
+  return match?.[0] ?? '';
+};
+
+const parseFinishersFromOaklawnResultsTable = (html, raceNumber) => {
+  const raceSectionHtml = extractOaklawnRaceSectionHtml(html, raceNumber);
+  if (!raceSectionHtml) {
+    return [];
+  }
+
+  const winnersTableHtml =
+    raceSectionHtml.match(/<table[^>]*class="[^"]*\bwinners\b[^"]*"[^>]*>([\s\S]*?)<\/table>/i)?.[1] ?? '';
+  if (!winnersTableHtml) {
+    return [];
+  }
+
+  const finishers = [];
+
+  for (const rowMatch of winnersTableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const rowHtml = rowMatch[1] ?? '';
+    const resultCellHtml = rowHtml.match(/<td[^>]*class="[^"]*\beb_number\b[^"]*"[^>]*>([\s\S]*?)<\/td>/i)?.[1] ?? '';
+    if (!resultCellHtml) {
+      continue;
+    }
+
+    const programToken = resultCellHtml.match(/<div>\s*([0-9A-Z]+)\s*<\/div>/i)?.[1] ?? '';
+    const horseNameHtml = resultCellHtml.match(/<strong>([\s\S]*?)<\/strong>/i)?.[1] ?? '';
+    const postPosition = parseProgramNumber(programToken);
+    const horseName = sanitizeHorseCandidate(stripHtml(horseNameHtml));
+
+    if (!postPosition) {
+      continue;
+    }
+
+    finishers.push({
+      post_position: postPosition,
+      horse_name: horseName || null
+    });
+  }
+
+  return finishers;
+};
+
+const parseFinishersFromOaklawnWagerTable = (html, raceNumber) => {
+  const raceSectionHtml = extractOaklawnRaceSectionHtml(html, raceNumber);
+  if (!raceSectionHtml) {
+    return [];
+  }
+
+  const tables = [...raceSectionHtml.matchAll(/<table[^>]*>([\s\S]*?)<\/table>/gi)].map((match) => match[1] ?? '');
+  const wagerTableHtml = tables.find((tableHtml) => /<th>\s*Wager Type\s*<\/th>/i.test(tableHtml)) ?? '';
+  if (!wagerTableHtml) {
+    return [];
+  }
+
+  const sequences = new Map();
+
+  for (const rowMatch of wagerTableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const rowHtml = rowMatch[1] ?? '';
+    const columns = [...rowHtml.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((entry) =>
+      stripHtml(entry[1] ?? '').replace(/\s+/g, ' ').trim()
+    );
+
+    if (columns.length < 2) {
+      continue;
+    }
+
+    const wagerType = String(columns[0] ?? '').toLowerCase();
+    const winners = String(columns[1] ?? '');
+    const tokens = winners
+      .split('-')
+      .map((entry) => parseProgramNumber(entry))
+      .filter((entry) => Number.isInteger(entry) && entry > 0);
+
+    if (tokens.length) {
+      sequences.set(wagerType, tokens);
+    }
+  }
+
+  const finishOrder =
+    sequences.get('super hi-5') ??
+    sequences.get('super high five') ??
+    sequences.get('superfecta') ??
+    sequences.get('trifecta') ??
+    sequences.get('exacta') ??
+    sequences.get('quinella') ??
+    sequences.get('win') ??
+    [];
+
+  return finishOrder.map((postPosition) => ({
+    post_position: postPosition
+  }));
+};
+
 const sanitizeHorseCandidate = (value) => {
   const text = String(value ?? '')
     .replace(/\s+/g, ' ')
@@ -569,15 +709,19 @@ const fetchRaceResultsPage = async ({ provider, cacheKey, urls, parseFinishers }
       }
 
       const html = await response.text();
-      const finishers = parseFinishers(html);
+      const parsed = normalizeParsedFinishers(parseFinishers(html));
 
       const payload = {
         provider,
         fetchedAt: new Date().toISOString(),
-        found: finishers.length > 0,
-        finishers,
+        found: parsed.finishers.length > 0,
+        finishers: parsed.finishers,
         url,
-        diagnostics
+        diagnostics: {
+          ...diagnostics,
+          extraction: parsed.extraction,
+          parseCandidates: parsed.candidates
+        }
       };
 
       autoResultsCache.set(cacheKey, {
@@ -655,18 +799,56 @@ const fetchOfficialFinishersFromEquibase = async (race) => {
     urls,
     parseFinishers: (html) => {
       const fromResultBlocks = parseFinishersFromResultsBlocks(html, raceNumber);
-      if (fromResultBlocks.length) {
-        return fromResultBlocks;
-      }
-
       const fromWagers = parseFinishersFromWagerWinners(html, raceNumber);
-      if (fromWagers.length) {
-        return fromWagers;
-      }
-
       const fromRows = parseFinishersFromTableRows(html, raceNumber);
       const fromLines = parseFinishersFromLines(html, raceNumber);
-      return fromRows.length >= fromLines.length ? fromRows : fromLines;
+      const fromStructuredRows = fromRows.length >= fromLines.length ? fromRows : fromLines;
+
+      if (fromResultBlocks.length) {
+        return {
+          finishers: fromResultBlocks,
+          extraction: {
+            method: 'equibase-results-blocks',
+            label: 'Equibase results blocks'
+          },
+          candidates: {
+            resultBlocks: fromResultBlocks.length,
+            wagerWinners: fromWagers.length,
+            tableRows: fromRows.length,
+            textLines: fromLines.length
+          }
+        };
+      }
+
+      if (fromWagers.length) {
+        return {
+          finishers: fromWagers,
+          extraction: {
+            method: 'equibase-wager-winners',
+            label: 'Equibase wager winners'
+          },
+          candidates: {
+            resultBlocks: fromResultBlocks.length,
+            wagerWinners: fromWagers.length,
+            tableRows: fromRows.length,
+            textLines: fromLines.length
+          }
+        };
+      }
+
+      return {
+        finishers: fromStructuredRows,
+        extraction: {
+          method: fromRows.length >= fromLines.length ? 'equibase-table-rows' : 'equibase-text-lines',
+          label: fromRows.length >= fromLines.length ? 'Equibase table rows' : 'Equibase text lines'
+        },
+        candidates: {
+          resultBlocks: fromResultBlocks.length,
+          wagerWinners: fromWagers.length,
+          tableRows: fromRows.length,
+          textLines: fromLines.length
+        }
+      };
     }
   });
 };
@@ -706,12 +888,72 @@ const fetchOfficialFinishersFromOaklawn = async (race) => {
     cacheKey: `oaklawn:${dateKey}-r${raceNumber}`,
     urls: [url],
     parseFinishers: (html) => {
+      const fromResultsTable = parseFinishersFromOaklawnResultsTable(html, raceNumber);
+      const fromWagerTable = parseFinishersFromOaklawnWagerTable(html, raceNumber);
       const fromResultBlocks = parseFinishersFromResultsBlocks(html, raceNumber);
-      if (fromResultBlocks.length) {
-        return fromResultBlocks;
+      const fromWagerText = parseFinishersFromWagerWinners(html, raceNumber);
+
+      if (fromResultsTable.length) {
+        return {
+          finishers: fromResultsTable,
+          extraction: {
+            method: 'oaklawn-winners-table',
+            label: 'Oaklawn winners table'
+          },
+          candidates: {
+            winnersTable: fromResultsTable.length,
+            wagerTable: fromWagerTable.length,
+            resultBlocks: fromResultBlocks.length,
+            wagerText: fromWagerText.length
+          }
+        };
       }
 
-      return parseFinishersFromWagerWinners(html, raceNumber);
+      if (fromWagerTable.length) {
+        return {
+          finishers: fromWagerTable,
+          extraction: {
+            method: 'oaklawn-wager-table',
+            label: 'Oaklawn wager table'
+          },
+          candidates: {
+            winnersTable: fromResultsTable.length,
+            wagerTable: fromWagerTable.length,
+            resultBlocks: fromResultBlocks.length,
+            wagerText: fromWagerText.length
+          }
+        };
+      }
+
+      if (fromResultBlocks.length) {
+        return {
+          finishers: fromResultBlocks,
+          extraction: {
+            method: 'oaklawn-results-blocks',
+            label: 'Oaklawn results blocks'
+          },
+          candidates: {
+            winnersTable: fromResultsTable.length,
+            wagerTable: fromWagerTable.length,
+            resultBlocks: fromResultBlocks.length,
+            wagerText: fromWagerText.length
+          }
+        };
+      }
+
+      return {
+        finishers: fromWagerText,
+        extraction: {
+          method: 'oaklawn-wager-text',
+          label: 'Oaklawn wager text'
+        },
+        candidates: {
+          winnersTable: fromResultsTable.length,
+          wagerTable: fromWagerTable.length,
+          resultBlocks: fromResultBlocks.length,
+          wagerText: fromWagerText.length
+        }
+      };
     }
   });
 };
@@ -757,7 +999,7 @@ const fetchOfficialFinishers = async (race) => {
   };
 };
 
-const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial }) => {
+const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial, metadata }) => {
   const race = getRaceStmt.get(raceId);
   if (!race) {
     throw new Error('Race not found.');
@@ -871,6 +1113,10 @@ const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial 
     markRaceOfficialStmt.run(raceId);
   }
 
+  if (metadata !== undefined) {
+    updateRaceResultsMetadataStmt.run(metadata ? JSON.stringify(metadata) : null, raceId);
+  }
+
   const results = listRaceResultsStmt.all(raceId);
 
   return {
@@ -883,8 +1129,8 @@ const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial 
   };
 });
 
-export const setOfficialResultsAndSettle = ({ raceId, finishOrder, markOfficial = true }) =>
-  settleRaceResultsTx({ raceId, finishOrder, markOfficial });
+export const setOfficialResultsAndSettle = ({ raceId, finishOrder, markOfficial = true, metadata }) =>
+  settleRaceResultsTx({ raceId, finishOrder, markOfficial, metadata });
 
 export const tryAutoFetchAndSettleRace = async ({ raceId }) => {
   const race = getRaceStmt.get(raceId);
@@ -899,6 +1145,7 @@ export const tryAutoFetchAndSettleRace = async ({ raceId }) => {
       settled: false,
       alreadyOfficial: true,
       provider: null,
+      metadata: jsonParseSafe(race.results_metadata_json, null),
       message: 'Race is already settled.'
     };
   }
@@ -909,6 +1156,7 @@ export const tryAutoFetchAndSettleRace = async ({ raceId }) => {
       settled: false,
       alreadyOfficial: true,
       provider: null,
+      metadata: jsonParseSafe(race.results_metadata_json, null),
       message: 'Race already has stored official results.'
     };
   }
@@ -934,7 +1182,13 @@ export const tryAutoFetchAndSettleRace = async ({ raceId }) => {
   const settled = setOfficialResultsAndSettle({
     raceId,
     finishOrder: fetched.finishers,
-    markOfficial: true
+    markOfficial: true,
+    metadata: {
+      provider: fetched.provider,
+      fetchedAt: fetched.fetchedAt,
+      sourceUrl: fetched.url ?? null,
+      diagnostics: fetched.diagnostics ?? null
+    }
   });
 
   return {
@@ -943,6 +1197,12 @@ export const tryAutoFetchAndSettleRace = async ({ raceId }) => {
     fetchedAt: fetched.fetchedAt,
     sourceUrl: fetched.url,
     diagnostics: fetched.diagnostics,
+    metadata: {
+      provider: fetched.provider,
+      fetchedAt: fetched.fetchedAt,
+      sourceUrl: fetched.url ?? null,
+      diagnostics: fetched.diagnostics ?? null
+    },
     settlement: settled
   };
 };

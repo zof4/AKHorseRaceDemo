@@ -34,6 +34,7 @@ const ensureColumn = (tableName, columnName, definition) => {
 ensureColumn('races', 'race_config_json', 'TEXT');
 ensureColumn('races', 'brisnet_config_json', 'TEXT');
 ensureColumn('races', 'sources_json', 'TEXT');
+ensureColumn('races', 'results_metadata_json', 'TEXT');
 
 ensureColumn('horses', 'speed_rating', 'REAL');
 ensureColumn('horses', 'form_rating', 'REAL');

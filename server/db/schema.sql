@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS races (
   race_config_json TEXT,
   brisnet_config_json TEXT,
   sources_json TEXT,
+  results_metadata_json TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
