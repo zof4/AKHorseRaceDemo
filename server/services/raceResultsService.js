@@ -9,6 +9,7 @@ const DEFAULT_HEADERS = {
 
 const AUTO_RESULTS_CACHE_TTL_MS = Math.max(30_000, Number(process.env.EQUIBASE_RESULTS_CACHE_MS ?? 90_000));
 const autoResultsCache = new Map();
+const MINIMUM_OFFICIAL_FINISHERS = 3;
 
 const roundCurrency = (value) => Number((Number(value || 0) + Number.EPSILON).toFixed(2));
 const pad = (value) => String(value).padStart(2, '0');
@@ -196,15 +197,80 @@ const buildWinningKeysByType = (finishOrder) => {
   return map;
 };
 
+const getRequiredFinishersForBetType = (betType) => {
+  switch (String(betType ?? '').trim()) {
+    case 'super_hi_5':
+      return 5;
+    case 'superfecta':
+      return 4;
+    case 'trifecta':
+      return 3;
+    case 'show':
+      return 3;
+    case 'exacta':
+    case 'quinella':
+    case 'place':
+      return 2;
+    case 'win':
+      return 1;
+    default:
+      return 1;
+  }
+};
+
+const getRequiredFinishersForBets = (bets) => {
+  const maxRequired = (Array.isArray(bets) ? bets : []).reduce(
+    (highest, bet) => Math.max(highest, getRequiredFinishersForBetType(bet?.bet_type)),
+    0
+  );
+  return Math.max(MINIMUM_OFFICIAL_FINISHERS, maxRequired);
+};
+
 const resolveFinishOrder = (finishOrderInput, horses) => {
   const warnings = [];
-  const horseIds = horses.map((horse) => Number(horse.id)).filter((id) => Number.isInteger(id) && id > 0);
+  const activeHorses = (Array.isArray(horses) ? horses : []).filter((horse) => !Number(horse.scratched));
+  const horseIds = activeHorses.map((horse) => Number(horse.id)).filter((id) => Number.isInteger(id) && id > 0);
   const horseIdSet = new Set(horseIds);
   const horseNameToId = new Map();
   const horseNameEntries = [];
-  const postPositionToId = new Map();
+  const postPositionToIds = new Map();
 
-  for (const horse of horses) {
+  const resolveByName = (value) => {
+    const normalizedName = normalizeHorseName(value);
+    if (!normalizedName) {
+      return null;
+    }
+
+    const exact = horseNameToId.get(normalizedName) ?? null;
+    if (exact) {
+      return exact;
+    }
+
+    const fuzzyMatches = horseNameEntries.filter(
+      (entry) => normalizedName.includes(entry.key) || entry.key.includes(normalizedName)
+    );
+    return fuzzyMatches.length === 1 ? fuzzyMatches[0].horseId : null;
+  };
+
+  const resolveByProgramNumber = (value) => {
+    const programNumber = parseProgramNumber(value);
+    if (!programNumber) {
+      return { horseId: null, programNumber: null };
+    }
+
+    const matches = postPositionToIds.get(programNumber) ?? [];
+    if (matches.length > 1) {
+      warnings.push(`Program ${programNumber} maps to multiple active horses; skipping ambiguous result mapping.`);
+      return { horseId: null, programNumber };
+    }
+
+    return {
+      horseId: matches[0] ?? null,
+      programNumber
+    };
+  };
+
+  for (const horse of activeHorses) {
     const key = normalizeHorseName(horse.name);
     if (key && !horseNameToId.has(key)) {
       horseNameToId.set(key, Number(horse.id));
@@ -217,8 +283,11 @@ const resolveFinishOrder = (finishOrderInput, horses) => {
     }
 
     const postPosition = Number(horse.post_position);
-    if (Number.isInteger(postPosition) && postPosition > 0 && !postPositionToId.has(postPosition)) {
-      postPositionToId.set(postPosition, Number(horse.id));
+    if (Number.isInteger(postPosition) && postPosition > 0) {
+      if (!postPositionToIds.has(postPosition)) {
+        postPositionToIds.set(postPosition, []);
+      }
+      postPositionToIds.get(postPosition).push(Number(horse.id));
     }
   }
 
@@ -230,51 +299,43 @@ const resolveFinishOrder = (finishOrderInput, horses) => {
     if (Number.isInteger(Number(rawEntry)) && horseIdSet.has(Number(rawEntry))) {
       horseId = Number(rawEntry);
     } else if (typeof rawEntry === 'string') {
-      const normalizedName = normalizeHorseName(rawEntry);
-      horseId = horseNameToId.get(normalizedName) ?? null;
-      if (!horseId && normalizedName) {
-        const fuzzyMatches = horseNameEntries.filter(
-          (entry) => normalizedName.includes(entry.key) || entry.key.includes(normalizedName)
-        );
-        if (fuzzyMatches.length === 1) {
-          horseId = fuzzyMatches[0].horseId;
-        }
-      }
+      horseId = resolveByName(rawEntry);
     } else if (rawEntry && typeof rawEntry === 'object') {
       const idFromPayload = Number(rawEntry.horse_id ?? rawEntry.horseId ?? rawEntry.id);
       if (Number.isInteger(idFromPayload) && horseIdSet.has(idFromPayload)) {
         horseId = idFromPayload;
       } else {
-        const programNumber =
-          parseProgramNumber(
-            rawEntry.post_position ??
-              rawEntry.postPosition ??
-              rawEntry.programNumber ??
-              rawEntry.program ??
-              rawEntry.number
-          ) ?? null;
-        if (programNumber && postPositionToId.has(programNumber)) {
-          horseId = postPositionToId.get(programNumber) ?? null;
+        const name = String(rawEntry.horse_name ?? rawEntry.horseName ?? rawEntry.name ?? '').trim();
+        const namedHorseId = name ? resolveByName(name) : null;
+        const { horseId: programHorseId, programNumber } = resolveByProgramNumber(
+          rawEntry.post_position ??
+            rawEntry.postPosition ??
+            rawEntry.programNumber ??
+            rawEntry.program ??
+            rawEntry.number
+        );
+
+        if (namedHorseId && programHorseId && namedHorseId !== programHorseId) {
+          warnings.push(
+            `Conflicting result mapping for "${name}": using horse name match over program ${programNumber}.`
+          );
+          horseId = namedHorseId;
+        } else {
+          horseId = namedHorseId ?? programHorseId ?? null;
         }
 
-        const name = String(rawEntry.horse_name ?? rawEntry.horseName ?? rawEntry.name ?? '').trim();
-        if (!horseId && name) {
-          const normalizedName = normalizeHorseName(name);
-          horseId = horseNameToId.get(normalizedName) ?? null;
-          if (!horseId && normalizedName) {
-            const fuzzyMatches = horseNameEntries.filter(
-              (entry) => normalizedName.includes(entry.key) || entry.key.includes(normalizedName)
-            );
-            if (fuzzyMatches.length === 1) {
-              horseId = fuzzyMatches[0].horseId;
-            }
-          }
+        if (!horseId && name && programNumber) {
+          warnings.push(`Could not map active horse for "${name}" with program ${programNumber}.`);
+        } else if (!horseId && name) {
+          warnings.push(`Could not map active horse by name: ${name}`);
+        } else if (!horseId && programNumber) {
+          warnings.push(`Could not map active horse by program: ${programNumber}`);
         }
       }
     }
 
     if (!horseId) {
-      warnings.push(`Could not map result entry to race horse: ${String(rawEntry ?? '').slice(0, 80)}`);
+      warnings.push(`Could not map result entry to active race horse: ${String(rawEntry ?? '').slice(0, 80)}`);
       continue;
     }
 
@@ -283,6 +344,10 @@ const resolveFinishOrder = (finishOrderInput, horses) => {
     }
 
     normalized.push(horseId);
+  }
+
+  if (!activeHorses.length) {
+    warnings.push('Race has no active horses available for result mapping.');
   }
 
   return { finishOrder: normalized, warnings };
@@ -504,13 +569,14 @@ const normalizeParsedFinishers = (parsed, defaultMethod = 'unknown') => {
 };
 
 const extractOaklawnRaceSectionHtml = (html, raceNumber) => {
-  const match = String(html ?? '').match(
-    new RegExp(
-      `<div class="eb-race">[\\s\\S]*?<h3>\\s*Race\\s*${raceNumber}\\s*<\\/h3>[\\s\\S]*?(?=<div class="eb-race">|<\\/section>)`,
-      'i'
-    )
+  const blocks = String(html ?? '')
+    .split(/<div class="eb-race">/i)
+    .slice(1)
+    .map((block) => `<div class="eb-race">${block}`);
+
+  return (
+    blocks.find((block) => new RegExp(`<h3>\\s*Race\\s*${raceNumber}\\s*<\\/h3>`, 'i').test(block)) ?? ''
   );
-  return match?.[0] ?? '';
 };
 
 const parseFinishersFromOaklawnResultsTable = (html, raceNumber) => {
@@ -1012,10 +1078,14 @@ const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial,
   }
 
   const horses = listRaceHorsesStmt.all(raceId);
+  const bets = listRaceBetsStmt.all(raceId);
+  const requiredFinishers = getRequiredFinishersForBets(bets);
   const resolved = resolveFinishOrder(finishOrder, horses);
 
-  if (resolved.finishOrder.length < 1) {
-    throw new Error('No valid finish order entries were provided.');
+  if (resolved.finishOrder.length < requiredFinishers) {
+    throw new Error(
+      `Resolved ${resolved.finishOrder.length} official finisher(s), but ${requiredFinishers} are required to settle this race safely.`
+    );
   }
 
   deleteRaceResultsStmt.run(raceId);
@@ -1024,7 +1094,6 @@ const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial,
   });
 
   const winningKeysByType = buildWinningKeysByType(resolved.finishOrder);
-  const bets = listRaceBetsStmt.all(raceId);
   const poolByType = new Map(
     listRacePoolTotalsStmt.all(raceId).map((row) => [String(row.bet_type), Number(row.total_amount || 0)])
   );
@@ -1114,7 +1183,21 @@ const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial,
   }
 
   if (metadata !== undefined) {
-    updateRaceResultsMetadataStmt.run(metadata ? JSON.stringify(metadata) : null, raceId);
+    const enrichedMetadata =
+      metadata && typeof metadata === 'object'
+        ? {
+            ...metadata,
+            diagnostics: {
+              ...(metadata.diagnostics ?? {}),
+              resolution: {
+                requiredFinishers,
+                resolvedFinishers: resolved.finishOrder.length,
+                warnings: resolved.warnings
+              }
+            }
+          }
+        : metadata;
+    updateRaceResultsMetadataStmt.run(enrichedMetadata ? JSON.stringify(enrichedMetadata) : null, raceId);
   }
 
   const results = listRaceResultsStmt.all(raceId);
@@ -1123,6 +1206,7 @@ const settleRaceResultsTx = db.transaction(({ raceId, finishOrder, markOfficial,
     raceId,
     finishOrder: resolved.finishOrder,
     warnings: resolved.warnings,
+    requiredFinishers,
     settledCount,
     settled,
     results
@@ -1179,17 +1263,35 @@ export const tryAutoFetchAndSettleRace = async ({ raceId }) => {
     };
   }
 
-  const settled = setOfficialResultsAndSettle({
-    raceId,
-    finishOrder: fetched.finishers,
-    markOfficial: true,
-    metadata: {
+  let settled;
+  try {
+    settled = setOfficialResultsAndSettle({
+      raceId,
+      finishOrder: fetched.finishers,
+      markOfficial: true,
+      metadata: {
+        provider: fetched.provider,
+        fetchedAt: fetched.fetchedAt,
+        sourceUrl: fetched.url ?? null,
+        diagnostics: fetched.diagnostics ?? null
+      }
+    });
+  } catch (error) {
+    return {
+      settled: false,
       provider: fetched.provider,
       fetchedAt: fetched.fetchedAt,
-      sourceUrl: fetched.url ?? null,
-      diagnostics: fetched.diagnostics ?? null
-    }
-  });
+      sourceUrl: fetched.url,
+      diagnostics: fetched.diagnostics,
+      metadata: {
+        provider: fetched.provider,
+        fetchedAt: fetched.fetchedAt,
+        sourceUrl: fetched.url ?? null,
+        diagnostics: fetched.diagnostics ?? null
+      },
+      message: error instanceof Error ? error.message : 'Official finish order could not be resolved safely.'
+    };
+  }
 
   return {
     settled: true,
@@ -1201,7 +1303,14 @@ export const tryAutoFetchAndSettleRace = async ({ raceId }) => {
       provider: fetched.provider,
       fetchedAt: fetched.fetchedAt,
       sourceUrl: fetched.url ?? null,
-      diagnostics: fetched.diagnostics ?? null
+      diagnostics: {
+        ...(fetched.diagnostics ?? {}),
+        resolution: {
+          requiredFinishers: settled.requiredFinishers,
+          resolvedFinishers: settled.finishOrder.length,
+          warnings: settled.warnings
+        }
+      }
     },
     settlement: settled
   };

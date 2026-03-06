@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { BET_MODIFIERS, BET_TYPES, getBetType } from '../lib/betTypes.js';
+import { BET_TYPES, getBetModifiersForType, getBetType } from '../lib/betTypes.js';
 import { useUser } from '../context/UserContext.jsx';
 
 const parseId = (value) => {
@@ -41,6 +41,7 @@ export default function PlaceBet() {
   const [success, setSuccess] = useState('');
 
   const betType = useMemo(() => getBetType(betTypeId), [betTypeId]);
+  const availableModifiers = useMemo(() => getBetModifiersForType(betTypeId), [betTypeId]);
 
   const horses = (race?.horses ?? []).filter((horse) => !Number(horse.scratched));
 
@@ -78,6 +79,13 @@ export default function PlaceBet() {
     setSuccess('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [betTypeId]);
+
+  useEffect(() => {
+    if (availableModifiers.some((modifier) => modifier.id === betModifier)) {
+      return;
+    }
+    setBetModifier(availableModifiers[0]?.id ?? 'straight');
+  }, [availableModifiers, betModifier]);
 
   useEffect(() => {
     setQuote(null);
@@ -204,7 +212,7 @@ export default function PlaceBet() {
         <div className="grid gap-2 sm:grid-cols-2">
           {Array.from({ length: betType.positions }).map((_, index) => (
             <label key={index} className="text-xs text-stone-600">
-              Position {index + 1}
+              {betType.positions === 1 ? 'Selection' : `Position ${index + 1}`}
               <select
                 className="input mt-1"
                 value={selectionState.straightPositions[index] ?? ''}
@@ -409,7 +417,7 @@ export default function PlaceBet() {
           <label className="text-xs text-stone-600">
             Modifier
             <select className="input mt-1" value={betModifier} onChange={(event) => setBetModifier(event.target.value)}>
-              {BET_MODIFIERS.map((modifier) => (
+              {availableModifiers.map((modifier) => (
                 <option key={modifier.id} value={modifier.id}>
                   {modifier.label}
                 </option>

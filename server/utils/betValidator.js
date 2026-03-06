@@ -1,9 +1,12 @@
 const BET_SPECS = {
-  exacta: { positions: 2, minBase: 1, ordered: true },
-  quinella: { positions: 2, minBase: 1, ordered: false },
-  trifecta: { positions: 3, minBase: 1, ordered: true },
-  superfecta: { positions: 4, minBase: 0.1, ordered: true },
-  super_hi_5: { positions: 5, minBase: 0.1, ordered: true }
+  win: { positions: 1, minBase: 1, ordered: true, allowedModifiers: ['straight'] },
+  place: { positions: 1, minBase: 1, ordered: true, allowedModifiers: ['straight'] },
+  show: { positions: 1, minBase: 1, ordered: true, allowedModifiers: ['straight'] },
+  exacta: { positions: 2, minBase: 1, ordered: true, allowedModifiers: ['straight', 'box', 'wheel', 'key', 'part_wheel'] },
+  quinella: { positions: 2, minBase: 1, ordered: false, allowedModifiers: ['straight', 'box', 'wheel', 'key', 'part_wheel'] },
+  trifecta: { positions: 3, minBase: 1, ordered: true, allowedModifiers: ['straight', 'box', 'wheel', 'key', 'part_wheel'] },
+  superfecta: { positions: 4, minBase: 0.1, ordered: true, allowedModifiers: ['straight', 'box', 'wheel', 'key', 'part_wheel'] },
+  super_hi_5: { positions: 5, minBase: 0.1, ordered: true, allowedModifiers: ['straight', 'box', 'wheel', 'key', 'part_wheel'] }
 };
 
 const MAX_COMBINATIONS = 20000;
@@ -250,6 +253,9 @@ export const validateAndExpandBet = ({ bet_type, bet_modifier, base_amount, sele
   }
 
   const betModifier = typeof bet_modifier === 'string' ? bet_modifier : 'straight';
+  if (!spec.allowedModifiers.includes(betModifier)) {
+    throw new Error(`${bet_type} only supports ${spec.allowedModifiers.join(', ')} tickets.`);
+  }
   const baseAmount = Number(base_amount);
   if (!Number.isFinite(baseAmount) || baseAmount <= 0) {
     throw new Error('base_amount must be a positive number.');

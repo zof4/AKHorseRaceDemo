@@ -14,7 +14,7 @@ import {
 } from '../services/raceResultsService.js';
 import { buildRaceOutcomeComparison } from '../services/raceOutcomeComparisonService.js';
 
-const BET_TYPES = ['exacta', 'quinella', 'trifecta', 'superfecta', 'super_hi_5'];
+const BET_TYPES = ['win', 'place', 'show', 'exacta', 'quinella', 'trifecta', 'superfecta', 'super_hi_5'];
 
 const listRacesStmt = db.prepare(
   `SELECT

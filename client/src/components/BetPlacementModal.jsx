@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useUser } from '../context/UserContext.jsx';
 import { api } from '../lib/api.js';
-import { BET_MODIFIERS, BET_TYPES, getBetType } from '../lib/betTypes.js';
+import { BET_TYPES, getBetModifiersForType, getBetType } from '../lib/betTypes.js';
 
 const parseId = (value) => {
   const parsed = Number(value);
@@ -110,7 +110,7 @@ const derivePrefillFromDraft = (draft, horses) => {
   const exactaSplit = ticket.split('/').map((entry) => cleanHorseFragment(entry)).filter(Boolean);
   const trifectaMatch = ticket.match(/^(.+?)\s+with\s+(.+)$/i);
   const trifectaFieldMatch = ticket.match(/^(.+?)\s+over\s+field/i);
-  const winPlaceMatch = ticket.match(/^(.+?)\s+to\s+(?:win|place)\b/i);
+  const straightPoolMatch = ticket.match(/^(.+?)\s+to\s+(win|place|show)\b/i);
 
   if (suggestedType.includes('exacta') || exactaSplit.length >= 2) {
     const ids = exactaSplit
@@ -159,17 +159,18 @@ const derivePrefillFromDraft = (draft, horses) => {
     };
   }
 
-  if (winPlaceMatch || focusHorseId) {
-    const nameFromTicket = cleanHorseFragment(winPlaceMatch?.[1] ?? '');
+  if (straightPoolMatch || focusHorseId) {
+    const nameFromTicket = cleanHorseFragment(straightPoolMatch?.[1] ?? '');
     const ticketHorseId = findHorseIdByName(horses, nameFromTicket);
     const keyHorseId = ticketHorseId ?? focusHorseId ?? null;
+    const poolType = String(straightPoolMatch?.[2] ?? 'win').toLowerCase();
 
     return {
-      betTypeId: 'exacta',
-      betModifier: 'key',
+      betTypeId: poolType === 'place' || poolType === 'show' ? poolType : 'win',
+      betModifier: 'straight',
       selections: {
-        ...buildInitialSelectionState(2),
-        keyHorseIds: keyHorseId ? [keyHorseId] : []
+        ...buildInitialSelectionState(1),
+        straightPositions: [keyHorseId]
       }
     };
   }
@@ -197,6 +198,7 @@ export default function BetPlacementModal({ isOpen, race, draft, onClose, onBetP
   const scratchedHorses = useMemo(() => (race?.horses ?? []).filter((horse) => Number(horse.scratched)), [race]);
   const allowedHorseIds = useMemo(() => new Set(horses.map((horse) => Number(horse.id))), [horses]);
   const betType = useMemo(() => getBetType(betTypeId), [betTypeId]);
+  const availableModifiers = useMemo(() => getBetModifiersForType(betTypeId), [betTypeId]);
 
   useEffect(() => {
     if (!isOpen || !race) {
@@ -234,6 +236,16 @@ export default function BetPlacementModal({ isOpen, race, draft, onClose, onBetP
       setBaseAmount(minBase);
     }
   }, [baseAmount, betTypeId, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    if (availableModifiers.some((modifier) => modifier.id === betModifier)) {
+      return;
+    }
+    setBetModifier(availableModifiers[0]?.id ?? 'straight');
+  }, [availableModifiers, betModifier, isOpen]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -357,7 +369,7 @@ export default function BetPlacementModal({ isOpen, race, draft, onClose, onBetP
         <div className="grid gap-2 sm:grid-cols-2">
           {Array.from({ length: betType.positions }).map((_, index) => (
             <label key={index} className="text-xs text-stone-600">
-              Position {index + 1}
+              {betType.positions === 1 ? 'Selection' : `Position ${index + 1}`}
               <select
                 className="input mt-1"
                 value={selectionState.straightPositions[index] ?? ''}
@@ -552,7 +564,7 @@ export default function BetPlacementModal({ isOpen, race, draft, onClose, onBetP
             <label className="text-xs text-stone-600">
               Modifier
               <select className="input mt-1" value={betModifier} onChange={(event) => setBetModifier(event.target.value)}>
-                {BET_MODIFIERS.map((modifier) => (
+                {availableModifiers.map((modifier) => (
                   <option key={modifier.id} value={modifier.id}>
                     {modifier.label}
                   </option>
