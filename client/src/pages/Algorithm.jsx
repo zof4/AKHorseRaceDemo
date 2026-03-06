@@ -21,6 +21,9 @@ const formatBetType = (value) =>
 const formatPercent = (value) =>
   Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : '-';
 const formatSigned = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return '-';
+  }
   if (!Number.isFinite(Number(value))) {
     return '-';
   }
@@ -235,11 +238,61 @@ const tierToneClasses = {
   'Long-Shot Bet': 'border-rose-200 bg-rose-50'
 };
 
-const evaluateSuggestionOutcome = (label, finishPosition) => {
+const expectedBandClasses = {
+  Win: 'bg-emerald-100 text-emerald-800',
+  Board: 'bg-sky-100 text-sky-800',
+  Value: 'bg-amber-100 text-amber-900',
+  Fringe: 'bg-stone-100 text-stone-700'
+};
+
+const getExpectedFinishBand = (runner) => {
+  const rank = Number(runner?.rank || 0);
+  const probability = Number(runner?.modelProbability || 0);
+  const edge = Number(runner?.valueEdge || 0);
+
+  if (rank === 1 || probability >= 0.18) {
+    return { label: 'Win', detail: 'Primary win look' };
+  }
+  if (rank <= 3 || probability >= 0.11) {
+    return { label: 'Board', detail: 'Strong in-the-money profile' };
+  }
+  if (edge > 0 || rank <= 6) {
+    return { label: 'Value', detail: 'Playable overlay or fringe board shot' };
+  }
+  return { label: 'Fringe', detail: 'Needs a bigger step forward' };
+};
+
+const getDeltaToneClass = (value) => {
+  const delta = Number(value);
+  if (delta > 0) {
+    return 'text-emerald-700';
+  }
+  if (delta < 0) {
+    return 'text-rose-700';
+  }
+  return 'text-stone-900';
+};
+
+const getFinishDisplayLabel = ({ finishPosition, isWinner = false, fallbackLabel = 'Unplaced' }) => {
+  const finish = Number(finishPosition);
+  if (Number.isInteger(finish) && finish > 0) {
+    return isWinner || finish === 1 ? 'Winner' : formatOrdinal(finish);
+  }
+  return fallbackLabel;
+};
+
+const evaluateSuggestionOutcome = (label, finishPosition, raceIsFinal = false) => {
   const finish = Number(finishPosition);
   const hasFinish = Number.isInteger(finish) && finish > 0;
 
   if (!hasFinish) {
+    if (raceIsFinal) {
+      return {
+        summary: "Didn't place",
+        detail: 'Race is official and this runner was not in the listed placings',
+        tone: 'bg-rose-100 text-rose-800'
+      };
+    }
     return {
       summary: 'No official placing yet',
       detail: 'Result still syncing',
@@ -365,6 +418,149 @@ function ProbabilityBars({ modelProbability, marketProbability, compact = false 
   );
 }
 
+function ExpectedFinishBandChip({ runner }) {
+  const band = getExpectedFinishBand(runner);
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${expectedBandClasses[band.label] || expectedBandClasses.Fringe}`}>
+      {band.label}
+    </span>
+  );
+}
+
+function ModelResultLadder({ modelRank, finishLabel, deltaValue }) {
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-wide text-stone-500">
+      <span className="rounded-full bg-stone-100 px-2 py-0.5 font-semibold text-stone-700">Model #{modelRank || '-'}</span>
+      <span className="text-stone-400">-&gt;</span>
+      <span className="rounded-full bg-stone-100 px-2 py-0.5 font-semibold text-stone-700">{finishLabel}</span>
+      <span className={`rounded-full bg-white px-2 py-0.5 font-semibold ${getDeltaToneClass(deltaValue)}`}>Delta {formatSigned(deltaValue)}</span>
+    </div>
+  );
+}
+
+function RankShiftSparkline({ modelRank, finishPosition, maxRank }) {
+  const model = Number(modelRank);
+  const finish = Number(finishPosition);
+  const ceiling = Math.max(Number(maxRank || 0), model, finish, 3);
+
+  if (!Number.isInteger(model) || model <= 0 || !Number.isInteger(finish) || finish <= 0) {
+    return <span className="text-[11px] text-stone-400">No shift</span>;
+  }
+
+  const range = Math.max(1, ceiling - 1);
+  const modelOffset = ((model - 1) / range) * 100;
+  const finishOffset = ((finish - 1) / range) * 100;
+  const left = Math.min(modelOffset, finishOffset);
+  const width = Math.max(Math.abs(finishOffset - modelOffset), 2);
+  const tone =
+    finish < model ? 'bg-emerald-500' : finish > model ? 'bg-rose-400' : 'bg-stone-400';
+
+  return (
+    <div className="w-[88px]">
+      <div className="relative h-7">
+        <div className="absolute inset-x-0 top-3 h-px rounded-full bg-stone-200" />
+        <div className={`absolute top-[11px] h-0.5 rounded-full ${tone}`} style={{ left: `${left}%`, width: `${width}%` }} />
+        <div className="absolute top-0 -translate-x-1/2 text-[9px] font-semibold uppercase tracking-wide text-stone-500" style={{ left: `${modelOffset}%` }}>
+          M
+        </div>
+        <div className="absolute top-[9px] h-2.5 w-2.5 -translate-x-1/2 rounded-full border-2 border-white bg-[#9f8f7c] shadow-sm" style={{ left: `${modelOffset}%` }} />
+        <div className="absolute top-0 -translate-x-1/2 text-[9px] font-semibold uppercase tracking-wide text-stone-500" style={{ left: `${finishOffset}%` }}>
+          A
+        </div>
+        <div className="absolute top-[9px] h-2.5 w-2.5 -translate-x-1/2 rounded-full border-2 border-white bg-[#7d3d14] shadow-sm" style={{ left: `${finishOffset}%` }} />
+      </div>
+      <div className="mt-0.5 flex items-center justify-between text-[9px] uppercase tracking-wide text-stone-400">
+        <span>#{model}</span>
+        <span>{formatOrdinal(finish)}</span>
+      </div>
+    </div>
+  );
+}
+
+function TopThreeFlow({ officialPodium, modelTopThree, fallbackFinishLabel }) {
+  return (
+    <div className="mt-2 grid gap-2">
+      {[0, 1, 2].map((index) => {
+        const officialRunner = officialPodium[index] ?? null;
+        const modelRunner = modelTopThree[index] ?? null;
+        const isMatch =
+          normalizeHorseName(officialRunner?.name) &&
+          normalizeHorseName(officialRunner?.name) === normalizeHorseName(modelRunner?.name);
+        const officialFinishLabel = getFinishDisplayLabel({
+          finishPosition: officialRunner?.finishPosition,
+          isWinner: Number(officialRunner?.finishPosition) === 1,
+          fallbackLabel: fallbackFinishLabel || 'Unplaced'
+        });
+        const officialDelta =
+          Number.isInteger(Number(officialRunner?.rank)) && Number.isInteger(Number(officialRunner?.finishPosition))
+            ? Number(officialRunner.rank) - Number(officialRunner.finishPosition)
+            : null;
+
+        return (
+          <div
+            key={`top-flow-${index}`}
+            className="rounded-xl border border-stone-200 bg-[#fffaf3] px-3 py-2"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">
+                  {officialRunner ? `Official ${formatOrdinal(officialRunner.finishPosition)}` : 'Official'}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                    isMatch ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'
+                  }`}
+                >
+                  {isMatch ? 'Exact match' : 'Order changed'}
+                </span>
+              </div>
+              {officialRunner ? (
+                <div className="max-w-full">
+                  <ModelResultLadder
+                    modelRank={officialRunner.rank}
+                    finishLabel={officialFinishLabel}
+                    deltaValue={officialDelta}
+                  />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <div className="min-w-0">
+                {officialRunner ? (
+                  <>
+                    <p className="truncate text-sm font-semibold text-stone-900">{officialRunner.name}</p>
+                    <p className="text-xs text-stone-600">
+                      Odds {officialRunner.officialOdds || '-'} • Model #{officialRunner.rank}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm text-stone-500">No official placing</p>
+                )}
+              </div>
+
+              <div className="min-w-0 border-t border-stone-200 pt-2 md:border-l md:border-t-0 md:pl-3 md:pt-0">
+                {modelRunner ? (
+                  <>
+                    <p className="truncate text-sm font-semibold text-stone-900">
+                      #{modelRunner.rank} {modelRunner.name}
+                    </p>
+                    <p className="text-xs text-stone-600">
+                      Finished {getFinishDisplayLabel({ finishPosition: modelRunner.finishPosition, fallbackLabel: fallbackFinishLabel || 'Unplaced' })} • Edge {asPercent(modelRunner.valueEdge)}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm text-stone-500">No model selection</p>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CollapsiblePanel({ title, description, open, onToggle, children, actions = null }) {
   return (
     <article className="panel">
@@ -403,6 +599,7 @@ export default function Algorithm() {
   const [status, setStatus] = useState('Waiting for first refresh.');
   const [pageMode, setPageMode] = useState('pre');
   const [showWorkspaceControls, setShowWorkspaceControls] = useState(false);
+  const [compactWorkspaceHeader, setCompactWorkspaceHeader] = useState(false);
   const [signalsTab, setSignalsTab] = useState('top');
   const [advancedTab, setAdvancedTab] = useState('jockey');
   const [showBetDetails, setShowBetDetails] = useState(false);
@@ -436,6 +633,7 @@ export default function Algorithm() {
   const selectedRaceIdRef = useRef(0);
   const raceSyncRequestIdRef = useRef(0);
   const marketRefreshRequestIdRef = useRef(0);
+  const lastScrollYRef = useRef(0);
 
   const selectedRaceId = Number(searchParams.get('raceId') || 0);
   const selectedRaceExternalId = String(searchParams.get('raceExternalId') || '').trim();
@@ -561,10 +759,45 @@ export default function Algorithm() {
     setShowAdvancedPanel(false);
   }, [race?.id, race?.results]);
 
+  useEffect(() => {
+    if (showWorkspaceControls) {
+      setCompactWorkspaceHeader(false);
+    }
+  }, [showWorkspaceControls]);
+
+  useEffect(() => {
+    lastScrollYRef.current = typeof window === 'undefined' ? 0 : window.scrollY;
+
+    const onScroll = () => {
+      if (showWorkspaceControls) {
+        return;
+      }
+
+      const currentY = window.scrollY;
+      const delta = currentY - lastScrollYRef.current;
+      lastScrollYRef.current = currentY;
+
+      if (currentY <= 24) {
+        setCompactWorkspaceHeader(false);
+        return;
+      }
+
+      if (delta >= 10) {
+        setCompactWorkspaceHeader(true);
+      } else if (delta <= -10) {
+        setCompactWorkspaceHeader(false);
+      }
+    };
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [showWorkspaceControls]);
+
   const totalHorseCount = Array.isArray(race?.horses) ? race.horses.length : 0;
   const activeHorseCount = Array.isArray(race?.horses)
     ? race.horses.filter((horse) => !Number(horse.scratched)).length
     : 0;
+  const rankScaleMax = Math.max(totalHorseCount, activeHorseCount, 3);
 
   const secondsUntilNextRefresh =
     autoRefresh && nextAutoRefreshAt
@@ -574,10 +807,12 @@ export default function Algorithm() {
   const hasOfficialResults = Array.isArray(race?.results) && race.results.length > 0;
   const raceStatus = String(race?.status ?? '').toLowerCase();
   const canEnterPostRaceMode = hasOfficialResults || raceStatus === 'official' || raceStatus === 'closed';
+  const raceIsFinal = raceStatus === 'official' || raceStatus === 'closed';
   const selectedDayDisplay = selectedDayOption ? `${selectedDayOption.label} ${formatDateKey(selectedDayOption.dateKey)}` : 'Today';
   const selectedRaceDisplay = selectedRace
     ? `${selectedRace.track || selectedRace.name || 'Race'}${selectedRace.race_number ? ` R${selectedRace.race_number}` : ''}`
     : 'No race selected';
+  const isWorkspaceHeaderCompact = compactWorkspaceHeader && !showWorkspaceControls;
   const horseNameById = useMemo(
     () => new Map((race?.horses || []).map((horse) => [Number(horse.id), horse.name])),
     [race?.horses]
@@ -668,6 +903,18 @@ export default function Algorithm() {
     [rankedWithPosts]
   );
   const modelTopThree = useMemo(() => rankedWithPosts.slice(0, 3), [rankedWithPosts]);
+  const nextUnlistedFinishLabel = useMemo(() => {
+    const officialFinishes = rankedWithPosts
+      .map((runner) => Number(runner.finishPosition))
+      .filter((finish) => Number.isInteger(finish) && finish > 0);
+
+    if (!officialFinishes.length) {
+      return null;
+    }
+
+    return `${formatOrdinal(Math.max(...officialFinishes) + 1)}+`;
+  }, [rankedWithPosts]);
+  const unresolvedFinishLabel = raceIsFinal ? "Didn't place" : nextUnlistedFinishLabel || 'Unplaced';
   const displayedRunners = useMemo(() => {
     if (!(pageMode === 'post' && hasOfficialResults)) {
       return rankedWithPosts;
@@ -699,7 +946,7 @@ export default function Algorithm() {
       const result = officialResultsByHorseName.get(key);
       const horse = horseByNormalizedName.get(key);
       const finishPosition = Number(result?.finish_position) || null;
-      const outcome = evaluateSuggestionOutcome(entry.tier, finishPosition);
+      const outcome = evaluateSuggestionOutcome(entry.tier, finishPosition, raceIsFinal);
       rows.push({
         label: entry.tier,
         strategy: entry.strategy,
@@ -716,7 +963,7 @@ export default function Algorithm() {
       const result = officialResultsByHorseName.get(key);
       const horse = horseByNormalizedName.get(key);
       const finishPosition = Number(result?.finish_position) || null;
-      const outcome = evaluateSuggestionOutcome('Undercover Winner', finishPosition);
+      const outcome = evaluateSuggestionOutcome('Undercover Winner', finishPosition, raceIsFinal);
       rows.push({
         label: 'Undercover Winner',
         strategy: 'Dark horse value signal',
@@ -729,7 +976,7 @@ export default function Algorithm() {
     }
 
     return rows;
-  }, [analysis?.tierSuggestions, analysis?.undercoverWinner, horseByNormalizedName, officialResultsByHorseName, outcomeRowsByHorseName]);
+  }, [analysis?.tierSuggestions, analysis?.undercoverWinner, horseByNormalizedName, officialResultsByHorseName, outcomeRowsByHorseName, raceIsFinal]);
   const displayedRaceBets = useMemo(
     () => (showBetDetails ? raceBets : raceBets.slice(0, 3)),
     [raceBets, showBetDetails]
@@ -2069,15 +2316,41 @@ export default function Algorithm() {
   return (
     <>
       <section className="grid gap-4">
-        <article className="sticky top-3 z-20 rounded-2xl border border-[#d9c8b1] bg-[var(--bg-surface)]/95 px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.08)] backdrop-blur">
-          <div className="flex flex-col gap-1.5 md:flex-row md:items-start md:justify-between md:gap-3">
+        <article
+          className={`sticky top-3 z-20 rounded-2xl border border-[#d9c8b1] bg-[var(--bg-surface)]/95 px-3 shadow-[0_8px_24px_rgba(0,0,0,0.08)] backdrop-blur transition-all ${
+            isWorkspaceHeaderCompact ? 'py-1.5' : 'py-2'
+          }`}
+        >
+          <div
+            className={`${
+              isWorkspaceHeaderCompact
+                ? 'flex items-center justify-between gap-2'
+                : 'flex flex-col gap-1.5 md:flex-row md:items-start md:justify-between md:gap-3'
+            }`}
+          >
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">Workspace</p>
-                <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-700 md:hidden">
-                  {pageMode === 'post' ? 'Post-Race' : 'Pre-Race'}
-                </span>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <p className={`text-[11px] font-semibold uppercase tracking-wide text-stone-500 ${isWorkspaceHeaderCompact ? 'hidden md:block' : ''}`}>
+                    Workspace
+                  </p>
+                  <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-700 md:hidden">
+                    {pageMode === 'post' ? 'Post-Race' : 'Pre-Race'}
+                  </span>
+                </div>
+                <button
+                  className="btn-secondary shrink-0 px-2.5 py-1 text-xs"
+                  type="button"
+                  onClick={() => setShowWorkspaceControls((value) => !value)}
+                >
+                  {showWorkspaceControls ? 'Hide' : 'Settings'}
+                </button>
               </div>
+              {isWorkspaceHeaderCompact ? (
+                <p className="mt-0.5 truncate pr-2 text-xs font-medium text-stone-700 md:hidden">
+                  {selectedDayDisplay} • {selectedRaceDisplay}
+                </p>
+              ) : null}
               <div className="mt-1 hidden flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-stone-500 md:flex">
                 <span className="rounded-full bg-stone-100 px-2 py-1 font-semibold text-stone-700">
                   {pageMode === 'post' ? 'Post-Race Review' : 'Pre-Race Analysis'}
@@ -2085,7 +2358,7 @@ export default function Algorithm() {
                 <span className="rounded-full bg-stone-100 px-2 py-1 font-semibold text-stone-700">{selectedDayDisplay}</span>
                 <span className="rounded-full bg-stone-100 px-2 py-1 font-semibold text-stone-700">{selectedRaceDisplay}</span>
               </div>
-              <div className="mt-1 grid gap-0.5 md:hidden">
+              <div className={`mt-1 grid gap-0.5 md:hidden ${isWorkspaceHeaderCompact ? 'hidden' : ''}`}>
                 <p className="truncate text-sm font-semibold text-stone-800">
                   {selectedDayDisplay} • {selectedRaceDisplay}
                 </p>
@@ -2102,12 +2375,16 @@ export default function Algorithm() {
               </p>
             </div>
 
-            <div className="flex w-full items-center gap-2 md:w-auto md:flex-wrap md:justify-end">
-              <div className="grid min-w-0 flex-1 grid-cols-2 rounded-xl border border-[#d9c8b1] p-1 md:min-w-[17rem] md:flex-none">
+            <div className={`flex items-center ${isWorkspaceHeaderCompact ? 'w-auto' : 'w-full md:w-auto md:justify-end'}`}>
+              <div
+                className={`grid min-w-0 grid-cols-2 rounded-xl border border-[#d9c8b1] p-1 ${
+                  isWorkspaceHeaderCompact ? 'w-auto min-w-[12.5rem]' : 'w-full md:min-w-[17rem] md:w-auto'
+                }`}
+              >
                 <button
                   type="button"
                   onClick={() => setPageMode('pre')}
-                  className={`rounded-lg px-2 py-1.5 text-xs font-semibold ${
+                  className={`rounded-lg ${isWorkspaceHeaderCompact ? 'px-2 py-1' : 'px-2 py-1.5'} text-xs font-semibold ${
                     pageMode === 'pre' ? 'accent-band text-white' : 'text-stone-700'
                   }`}
                 >
@@ -2116,7 +2393,7 @@ export default function Algorithm() {
                 <button
                   type="button"
                   onClick={() => setPageMode('post')}
-                  className={`rounded-lg px-2 py-1.5 text-xs font-semibold ${
+                  className={`rounded-lg ${isWorkspaceHeaderCompact ? 'px-2 py-1' : 'px-2 py-1.5'} text-xs font-semibold ${
                     pageMode === 'post' ? 'accent-band text-white' : 'text-stone-700'
                   }`}
                   disabled={!canEnterPostRaceMode}
@@ -2124,13 +2401,6 @@ export default function Algorithm() {
                   Post-Race
                 </button>
               </div>
-              <button
-                className="btn-secondary shrink-0 px-2.5 py-1.5 text-xs"
-                type="button"
-                onClick={() => setShowWorkspaceControls((value) => !value)}
-              >
-                {showWorkspaceControls ? 'Hide' : 'Settings'}
-              </button>
             </div>
           </div>
 
@@ -2265,7 +2535,11 @@ export default function Algorithm() {
                 <p className="tile-title">Model Top Pick</p>
                 <p className="tile-value text-sm">{outcomeComparison?.summary?.modelTopPick || rankedWithPosts[0]?.name || '-'}</p>
                 <p className="mt-1 text-xs text-stone-600">
-                  Finished {formatOrdinal(outcomeComparison?.summary?.modelTopPickFinish || rankedWithPosts[0]?.finishPosition)}
+                  Finished{' '}
+                  {getFinishDisplayLabel({
+                    finishPosition: outcomeComparison?.summary?.modelTopPickFinish || rankedWithPosts[0]?.finishPosition,
+                    fallbackLabel: unresolvedFinishLabel
+                  })}
                 </p>
               </div>
               <div className="tile">
@@ -2308,55 +2582,13 @@ export default function Algorithm() {
 
             <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1.35fr),minmax(0,0.95fr)]">
               <div className="tile">
-                <p className="text-sm font-semibold text-stone-900">Official Vs Model Top Three</p>
-                <p className="mt-1 text-xs text-stone-600">Finish order on the left, model order on the right, aligned in one panel for a direct read.</p>
-                <div className="mt-3 hidden grid-cols-2 gap-3 px-2 text-[11px] font-semibold uppercase tracking-wide text-stone-500 md:grid">
-                  <span>Official finish</span>
-                  <span>Model top three</span>
-                </div>
-                <div className="mt-2 grid gap-2">
-                  {[0, 1, 2].map((index) => {
-                    const officialRunner = officialPodium[index] ?? null;
-                    const modelRunner = modelTopThree[index] ?? null;
-                    return (
-                      <div
-                        key={`top-three-compare-${index}`}
-                        className="grid gap-2 rounded-xl border border-stone-200 bg-[#fffaf3] px-3 py-2 md:grid-cols-2 md:gap-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-stone-500 md:hidden">Official finish</p>
-                          {officialRunner ? (
-                            <>
-                              <p className="truncate text-sm font-semibold text-stone-900">
-                                {formatOrdinal(officialRunner.finishPosition)} {officialRunner.name}
-                              </p>
-                              <p className="mt-1 text-xs text-stone-600">
-                                Post {officialRunner.postPosition} • Odds {officialRunner.officialOdds || '-'} • Model #{officialRunner.rank}
-                              </p>
-                            </>
-                          ) : (
-                            <p className="text-sm text-stone-500">No official placing</p>
-                          )}
-                        </div>
-                        <div className="min-w-0 border-t border-stone-200 pt-2 md:border-t-0 md:border-l md:border-stone-200 md:pl-3 md:pt-0">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-stone-500 md:hidden">Model top three</p>
-                          {modelRunner ? (
-                            <>
-                              <p className="truncate text-sm font-semibold text-stone-900">
-                                Model #{modelRunner.rank} {modelRunner.name}
-                              </p>
-                              <p className="mt-1 text-xs text-stone-600">
-                                Finished {formatOrdinal(modelRunner.finishPosition)} • Odds {modelRunner.officialOdds || '-'} • Edge {asPercent(modelRunner.valueEdge)}
-                              </p>
-                            </>
-                          ) : (
-                            <p className="text-sm text-stone-500">No model selection</p>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <p className="text-sm font-semibold text-stone-900">Top Three Flow</p>
+                <p className="mt-1 text-xs text-stone-600">Pre-race model order versus official finish, shown as one visual comparison stream.</p>
+                <TopThreeFlow
+                  officialPodium={officialPodium}
+                  modelTopThree={modelTopThree}
+                  fallbackFinishLabel={unresolvedFinishLabel}
+                />
               </div>
 
               <div className="tile">
@@ -2371,8 +2603,12 @@ export default function Algorithm() {
                               {entry.label}: {entry.horseName}
                             </p>
                             <p className="mt-1 text-xs text-stone-600">
-                              Suggested {entry.suggestedRank ? `at model #${entry.suggestedRank}` : 'as a value play'} to finish{' '}
-                              {formatOrdinal(entry.finishPosition)} • Odds {entry.odds || '-'}
+                              {entry.suggestedRank ? `Suggested at model #${entry.suggestedRank}` : 'Suggested as a value play'} • Result{' '}
+                              {getFinishDisplayLabel({
+                                finishPosition: entry.finishPosition,
+                                fallbackLabel: unresolvedFinishLabel
+                              })}{' '}
+                              • Odds {entry.odds || '-'}
                             </p>
                           </div>
                           <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${entry.outcome?.tone || 'bg-stone-100 text-stone-700'}`}>
@@ -2391,37 +2627,6 @@ export default function Algorithm() {
             </div>
           </article>
         ) : null}
-
-      <article className="panel">
-        <p className="kicker">Model Control</p>
-        <h2 className="page-title mt-1">Algorithm Systems</h2>
-        <p className="mt-1 text-sm text-stone-600">
-          Presets plus live Equibase cards auto-import for yesterday, today, and tomorrow. Tap any horse tile to inspect
-          exact math and historical context.
-        </p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="tile">
-            <p className="tile-title">Imported Races</p>
-            <p className="tile-value">{races.length}</p>
-          </div>
-          <div className="tile">
-            <p className="tile-title">Viewing Day</p>
-            <p className="tile-value text-base">{selectedDayDisplay}</p>
-          </div>
-          <div className="tile">
-            <p className="tile-title">Selected Race</p>
-            <p className="tile-value text-base">{selectedRaceDisplay}</p>
-          </div>
-          <div className="tile">
-            <p className="tile-title">Bankroll Sim</p>
-            <p className="tile-value">${Number(bankroll || 0).toFixed(0)}</p>
-          </div>
-          <div className="tile">
-            <p className="tile-title">Last Live Update</p>
-            <p className="tile-value text-sm">{formatTimestamp(lastLiveUpdateAt)}</p>
-          </div>
-        </div>
-      </article>
 
       {race ? (
         <article className="panel">
@@ -2468,19 +2673,20 @@ export default function Algorithm() {
               const selected = normalizeHorseName(runner.name) === normalizeHorseName(selectedRunner?.name);
               const comparisonRow = outcomeRowsByHorseName.get(normalizeHorseName(runner.name)) ?? null;
               const isPostRaceBoard = pageMode === 'post' && hasOfficialResults;
+              const expectedBand = getExpectedFinishBand(runner);
               const resultLabel = runner.finishPosition
                 ? runner.isOfficialWinner
                   ? 'Winner'
                   : formatOrdinal(runner.finishPosition)
                 : isPostRaceBoard
-                  ? 'Unplaced'
+                  ? unresolvedFinishLabel
                   : race.status === 'official'
                     ? 'Pending'
                     : 'Pre-race';
               const resultSubLabel = runner.finishPosition
                 ? `Model #${runner.rank}`
                 : isPostRaceBoard
-                  ? 'Outside placed finishers'
+                  ? 'Outside listed placings'
                   : hasOfficialResults
                     ? 'Awaiting sync'
                     : 'No result yet';
@@ -2521,6 +2727,7 @@ export default function Algorithm() {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-1.5 md:gap-2">
                         <p className="truncate text-sm font-semibold text-stone-900">{runner.name}</p>
+                        <ExpectedFinishBandChip runner={runner} />
                         <span
                           className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
                             Number(runner.valueEdge) >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
@@ -2541,11 +2748,19 @@ export default function Algorithm() {
                       <p className="mt-0.5 text-[11px] text-stone-600 md:mt-1 md:text-xs">
                         Score {asScore(runner.score)} • Fair {runner.fairOdds?.text || 'N/A'} • Market {runner.marketFairOdds?.text || 'N/A'}
                       </p>
+                      {!isPostRaceBoard ? (
+                        <p className="mt-1 text-[10px] uppercase tracking-wide text-stone-500">
+                          Expected band: {expectedBand.label} • {expectedBand.detail}
+                        </p>
+                      ) : null}
                       <ProbabilityBars
                         modelProbability={runner.modelProbability}
                         marketProbability={runner.marketProbability}
                         compact
                       />
+                      {isPostRaceBoard ? (
+                        <ModelResultLadder modelRank={runner.rank} finishLabel={resultLabel} deltaValue={deltaValue} />
+                      ) : null}
                     </div>
 
                     <div className="hidden md:block">
@@ -2935,12 +3150,13 @@ export default function Algorithm() {
 
             {outcomeComparison ? (
               <>
-                <div className="mt-3 hidden grid-cols-[auto,minmax(0,1.6fr),auto,auto,auto] gap-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-stone-500 md:grid">
+                <div className="mt-3 hidden grid-cols-[auto,minmax(0,1.6fr),auto,auto,auto,auto] gap-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-stone-500 md:grid">
                   <span>Finish</span>
                   <span>Horse</span>
                   <span>Model</span>
                   <span>Delta</span>
                   <span>Odds</span>
+                  <span>Shift</span>
                 </div>
                 <div className="mt-2 grid gap-2">
                   {Array.isArray(outcomeComparison.rows)
@@ -2951,7 +3167,7 @@ export default function Algorithm() {
                           className="rounded-xl border border-[#dfcfbb] bg-[#fffaf3] px-3 py-2 text-left transition hover:bg-[#fbf4ec]"
                           onClick={() => openInspectorForHorse(row.horseName)}
                         >
-                          <div className="grid gap-2 md:grid-cols-[auto,minmax(0,1.6fr),auto,auto,auto] md:items-center">
+                          <div className="grid gap-2 md:grid-cols-[auto,minmax(0,1.6fr),auto,auto,auto,auto] md:items-center">
                             <div>
                               <p className="text-sm font-semibold text-stone-900">{formatOrdinal(row.finishPosition)}</p>
                             </div>
@@ -2976,6 +3192,13 @@ export default function Algorithm() {
                             <div>
                               <p className="text-sm font-semibold text-stone-900">{row.endingOdds || '-'}</p>
                               <p className="text-[11px] text-stone-500">Official odds</p>
+                            </div>
+                            <div className="md:justify-self-end">
+                              <RankShiftSparkline
+                                modelRank={row.modelRank}
+                                finishPosition={row.finishPosition}
+                                maxRank={rankScaleMax}
+                              />
                             </div>
                           </div>
                         </button>
