@@ -522,9 +522,10 @@ export default function Algorithm() {
         trackCode: 'OP',
         dates
       });
-      markAutoImportRan({ signature: importDecision.signature });
     } catch (err) {
       setStatus(`Preset import completed; live Equibase import skipped (${err.message}).`);
+    } finally {
+      markAutoImportRan({ signature: importDecision.signature });
     }
   };
 
@@ -855,16 +856,20 @@ export default function Algorithm() {
         odds: Number(payload.updated?.odds || 0),
         signals: Number(payload.updated?.signals || 0),
         scratches: Number(payload.updated?.scratches || 0),
-        warnings: Array.isArray(payload.warnings) ? payload.warnings.length : 0
+        warnings: Array.isArray(payload.warnings) ? payload.warnings.length : 0,
+        settledBets: Number(payload.settlement?.settledCount || 0)
       });
       const warningText =
         Array.isArray(payload.warnings) && payload.warnings.length
           ? ` Warnings: ${payload.warnings.map((warning) => `${warning.provider}: ${warning.message}`).join(' | ')}`
           : '';
+      const settlementText = payload?.settlement
+        ? ` Results official; settled ${Number(payload.settlement.settledCount || 0)} bet(s).`
+        : '';
       setStatus(
         `Market refreshed: odds ${payload.updated.odds}, signals ${payload.updated.signals} at ${new Date(
           payload.fetchedAt
-        ).toLocaleTimeString()}.${warningText}`
+        ).toLocaleTimeString()}.${settlementText}${warningText}`
       );
     } catch (err) {
       if (requestId !== marketRefreshRequestIdRef.current || selectedRaceIdRef.current !== raceId) {

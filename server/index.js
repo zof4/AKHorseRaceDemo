@@ -47,7 +47,7 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/users', createUsersRouter(io));
 app.use('/api/races', createRacesRouter(io));
-app.use('/api/algorithm', createAlgorithmRouter());
+app.use('/api/algorithm', createAlgorithmRouter(io));
 app.use('/api/jockeys', createJockeysRouter());
 app.use('/api', createBetsRouter(io));
 

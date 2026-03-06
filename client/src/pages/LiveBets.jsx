@@ -97,10 +97,14 @@ export default function LiveBets() {
     const onBetPlaced = () => load();
     const onPoolUpdated = () => load();
     const onRaceCreated = () => load();
+    const onRaceResults = () => load();
+    const onBetsSettled = () => load();
 
     socket.on('bet_placed', onBetPlaced);
     socket.on('pool_updated', onPoolUpdated);
     socket.on('race_created', onRaceCreated);
+    socket.on('race_results', onRaceResults);
+    socket.on('bets_settled', onBetsSettled);
 
     const interval = window.setInterval(load, 15000);
 
@@ -108,6 +112,8 @@ export default function LiveBets() {
       socket.off('bet_placed', onBetPlaced);
       socket.off('pool_updated', onPoolUpdated);
       socket.off('race_created', onRaceCreated);
+      socket.off('race_results', onRaceResults);
+      socket.off('bets_settled', onBetsSettled);
       window.clearInterval(interval);
     };
   }, [load]);

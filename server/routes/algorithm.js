@@ -2,6 +2,8 @@ import { Router } from 'express';
 import db, { jsonParseSafe } from '../db/connection.js';
 import { getBrisnetSignals, getEquibaseScratches, getLiveOdds } from '../services/liveOddsProviders.js';
 import { runBaselineAnalysis } from '../services/baselineAlgorithm.js';
+import { tryAutoFetchAndSettleRace } from '../services/raceResultsService.js';
+import { analyzeRaceById } from '../services/raceOutcomeComparisonService.js';
 
 const NUMERIC_FIELDS = [
   'speed',
@@ -18,7 +20,7 @@ const NUMERIC_FIELDS = [
 ];
 
 const getRaceStmt = db.prepare(
-  `SELECT id, name, track, race_number, race_config_json, brisnet_config_json
+  `SELECT id, name, track, race_number, status, race_config_json, brisnet_config_json
    FROM races
    WHERE id = ?`
 );
@@ -27,18 +29,7 @@ const listRaceHorsesStmt = db.prepare(
   `SELECT
       id,
       name,
-      morning_line_odds,
-      speed_rating,
-      form_rating,
-      class_rating,
-      pace_fit_rating,
-      distance_fit_rating,
-      connections_rating,
-      consistency_rating,
-      volatility_rating,
-      late_kick_rating,
-      improving_trend_rating,
-      brisnet_signal
+      morning_line_odds
    FROM horses
    WHERE race_id = ? AND scratched = 0
    ORDER BY COALESCE(post_position, 999), id ASC`
@@ -97,36 +88,7 @@ const sanitizeHorse = (horse) => {
   return sanitized;
 };
 
-const mapRaceHorseToAnalysisHorse = (horse) => ({
-  name: horse.name,
-  odds: horse.morning_line_odds ?? '',
-  speed: Number(horse.speed_rating ?? 50),
-  form: Number(horse.form_rating ?? 50),
-  class: Number(horse.class_rating ?? 50),
-  paceFit: Number(horse.pace_fit_rating ?? 50),
-  distanceFit: Number(horse.distance_fit_rating ?? 50),
-  connections: Number(horse.connections_rating ?? 50),
-  consistency: Number(horse.consistency_rating ?? 50),
-  volatility: Number(horse.volatility_rating ?? 50),
-  lateKick: Number(horse.late_kick_rating ?? 50),
-  improvingTrend: Number(horse.improving_trend_rating ?? 50),
-  brisnetSignal: Number(horse.brisnet_signal ?? 50),
-  history: ''
-});
-
-const analyzeRaceById = (raceId, bankroll) => {
-  const horses = listRaceHorsesStmt.all(raceId).map(mapRaceHorseToAnalysisHorse);
-  if (horses.length < 3) {
-    throw new Error('Race needs at least three active horses for algorithm analysis.');
-  }
-
-  return runBaselineAnalysis({
-    horses,
-    bankroll: Number.isFinite(bankroll) && bankroll > 0 ? bankroll : 100
-  });
-};
-
-export const createAlgorithmRouter = () => {
+export const createAlgorithmRouter = (io) => {
   const router = Router();
 
   router.post('/analyze', (req, res) => {
@@ -312,11 +274,44 @@ export const createAlgorithmRouter = () => {
         });
       }
 
+      let settlement = null;
+      let officialResults = null;
+      if (String(race.status ?? '').toLowerCase() !== 'official') {
+        try {
+          officialResults = await tryAutoFetchAndSettleRace({ raceId });
+          if (officialResults?.settled) {
+            settlement = officialResults.settlement;
+            io?.emit('race_status', { raceId, status: 'official' });
+            io?.emit('race_results', {
+              raceId,
+              settledCount: settlement.settledCount,
+              results: settlement.results
+            });
+            io?.emit('bets_settled', {
+              raceId,
+              settledCount: settlement.settledCount
+            });
+          } else if (officialResults?.message) {
+            warnings.push({
+              provider: 'Results',
+              message: officialResults.message
+            });
+          }
+        } catch (error) {
+          warnings.push({
+            provider: 'Results',
+            message: error instanceof Error ? error.message : 'Official results check failed'
+          });
+        }
+      }
+
       return res.json({
         raceId,
         updated,
         warnings,
         analysis,
+        settlement,
+        officialResults,
         fetchedAt: new Date().toISOString(),
         market: {
           odds: oddsPayload

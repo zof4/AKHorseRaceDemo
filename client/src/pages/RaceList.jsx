@@ -68,9 +68,10 @@ export default function RaceList() {
       if (Array.isArray(result.imported) && result.imported.length) {
         setImportStatus((prev) => `${prev} Added ${result.imported.length} live Equibase races.`);
       }
-      markAutoImportRan({ signature: importDecision.signature });
     } catch (err) {
       setImportStatus((prev) => `${prev} Live Equibase import skipped (${err.message}).`);
+    } finally {
+      markAutoImportRan({ signature: importDecision.signature });
     }
   };
 

@@ -11,9 +11,11 @@ const toJson = async (response) => {
   return body;
 };
 
+const noStore = { cache: 'no-store' };
+
 export const api = {
   listUsers: async () => {
-    const response = await fetch('/api/users');
+    const response = await fetch('/api/users', noStore);
     return toJson(response);
   },
 
@@ -27,7 +29,7 @@ export const api = {
   },
 
   getUser: async (userId) => {
-    const response = await fetch(`/api/users/${userId}`);
+    const response = await fetch(`/api/users/${userId}`, noStore);
     return toJson(response);
   },
 
@@ -39,12 +41,22 @@ export const api = {
   },
 
   listRaces: async () => {
-    const response = await fetch('/api/races');
+    const response = await fetch('/api/races', noStore);
     return toJson(response);
   },
 
   getRace: async (raceId) => {
-    const response = await fetch(`/api/races/${raceId}`);
+    const response = await fetch(`/api/races/${raceId}`, noStore);
+    return toJson(response);
+  },
+
+  getRaceOutcomeComparison: async (raceId, bankroll) => {
+    const query = new URLSearchParams();
+    if (bankroll) {
+      query.set('bankroll', String(bankroll));
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const response = await fetch(`/api/races/${raceId}/outcome-comparison${suffix}`, noStore);
     return toJson(response);
   },
 
@@ -57,8 +69,33 @@ export const api = {
     return toJson(response);
   },
 
+  updateRaceStatus: async (raceId, payload) => {
+    const response = await fetch(`/api/races/${raceId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return toJson(response);
+  },
+
+  setRaceResults: async (raceId, payload) => {
+    const response = await fetch(`/api/races/${raceId}/results`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return toJson(response);
+  },
+
+  refreshRaceResults: async (raceId) => {
+    const response = await fetch(`/api/races/${raceId}/results/refresh`, {
+      method: 'POST'
+    });
+    return toJson(response);
+  },
+
   listRacePresets: async () => {
-    const response = await fetch('/api/races/presets');
+    const response = await fetch('/api/races/presets', noStore);
     return toJson(response);
   },
 
@@ -81,7 +118,7 @@ export const api = {
   },
 
   getPools: async (raceId) => {
-    const response = await fetch(`/api/pools/${raceId}`);
+    const response = await fetch(`/api/pools/${raceId}`, noStore);
     return toJson(response);
   },
 
@@ -113,7 +150,7 @@ export const api = {
     }
 
     const suffix = query.toString() ? `?${query.toString()}` : '';
-    const response = await fetch(`/api/bets${suffix}`);
+    const response = await fetch(`/api/bets${suffix}`, noStore);
     return toJson(response);
   },
 
@@ -123,7 +160,7 @@ export const api = {
       query.set('bankroll', String(bankroll));
     }
     const suffix = query.toString() ? `?${query.toString()}` : '';
-    const response = await fetch(`/api/algorithm/race/${raceId}/analyze${suffix}`);
+    const response = await fetch(`/api/algorithm/race/${raceId}/analyze${suffix}`, noStore);
     return toJson(response);
   },
 
@@ -133,7 +170,7 @@ export const api = {
     if (force) {
       query.set('force', '1');
     }
-    const response = await fetch(`/api/jockeys/profile?${query.toString()}`);
+    const response = await fetch(`/api/jockeys/profile?${query.toString()}`, noStore);
     return toJson(response);
   },
 

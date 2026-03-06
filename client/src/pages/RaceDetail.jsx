@@ -4,6 +4,15 @@ import { api } from '../lib/api.js';
 import socket from '../socket.js';
 
 const formatMoney = (value) => `$${Number(value || 0).toFixed(2)}`;
+const formatPercent = (value) =>
+  Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : '-';
+const formatSigned = (value) => {
+  if (!Number.isFinite(Number(value))) {
+    return '-';
+  }
+  const number = Number(value);
+  return number > 0 ? `+${number}` : String(number);
+};
 
 const poolTitle = (betType) =>
   betType
@@ -20,6 +29,11 @@ export default function RaceDetail() {
   const [pools, setPools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [checkingResults, setCheckingResults] = useState(false);
+  const [resultsMessage, setResultsMessage] = useState('');
+  const [outcomeComparison, setOutcomeComparison] = useState(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState('');
 
   const load = async () => {
     if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
@@ -41,10 +55,68 @@ export default function RaceDetail() {
     }
   };
 
+  const refreshOfficialResults = async () => {
+    if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
+      return;
+    }
+
+    setCheckingResults(true);
+    setError('');
+    setResultsMessage('');
+    try {
+      const payload = await api.refreshRaceResults(numericRaceId);
+      if (payload?.settlement) {
+        const providerLabel = payload?.autoResultImport?.provider ? ` from ${payload.autoResultImport.provider}` : '';
+        setResultsMessage(`Official results received${providerLabel} and bets were settled.`);
+      } else if (payload?.autoResultImport?.message) {
+        setResultsMessage(payload.autoResultImport.message);
+      } else {
+        setResultsMessage('No official finish posted yet.');
+      }
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCheckingResults(false);
+    }
+  };
+
+  const loadOutcomeComparison = async () => {
+    if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
+      return;
+    }
+
+    setComparisonLoading(true);
+    setComparisonError('');
+    try {
+      const { comparison } = await api.getRaceOutcomeComparison(numericRaceId);
+      setOutcomeComparison(comparison ?? null);
+    } catch (err) {
+      setOutcomeComparison(null);
+      setComparisonError(err.message);
+    } finally {
+      setComparisonLoading(false);
+    }
+  };
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raceId]);
+
+  useEffect(() => {
+    if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
+      return;
+    }
+    if (!Array.isArray(race?.results) || !race.results.length) {
+      setOutcomeComparison(null);
+      setComparisonError('');
+      setComparisonLoading(false);
+      return;
+    }
+    loadOutcomeComparison();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [numericRaceId, race?.results?.length]);
 
   useEffect(() => {
     if (!Number.isInteger(numericRaceId) || numericRaceId <= 0) {
@@ -67,13 +139,40 @@ export default function RaceDetail() {
       load();
     };
 
+    const onRaceStatus = (payload) => {
+      if (Number(payload?.raceId) !== numericRaceId) {
+        return;
+      }
+      load();
+    };
+
+    const onRaceResults = (payload) => {
+      if (Number(payload?.raceId) !== numericRaceId) {
+        return;
+      }
+      load();
+    };
+
+    const onBetsSettled = (payload) => {
+      if (Number(payload?.raceId) !== numericRaceId) {
+        return;
+      }
+      load();
+    };
+
     socket.on('pool_updated', onPoolUpdated);
     socket.on('bet_placed', onBetPlaced);
+    socket.on('race_status', onRaceStatus);
+    socket.on('race_results', onRaceResults);
+    socket.on('bets_settled', onBetsSettled);
 
     return () => {
       socket.emit('leave_race', { raceId: numericRaceId });
       socket.off('pool_updated', onPoolUpdated);
       socket.off('bet_placed', onBetPlaced);
+      socket.off('race_status', onRaceStatus);
+      socket.off('race_results', onRaceResults);
+      socket.off('bets_settled', onBetsSettled);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [numericRaceId]);
@@ -135,8 +234,107 @@ export default function RaceDetail() {
           <button className="btn-secondary" type="button" onClick={load}>
             Refresh Pools
           </button>
+          <button className="btn-secondary" type="button" onClick={refreshOfficialResults} disabled={checkingResults}>
+            {checkingResults ? 'Checking Results...' : 'Check Official Results'}
+          </button>
         </div>
+        {resultsMessage ? <p className="mt-2 text-xs text-emerald-700">{resultsMessage}</p> : null}
       </article>
+
+      {Array.isArray(race.results) && race.results.length ? (
+        <article className="panel">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-base font-semibold">Official Finish</h3>
+            <button className="btn-secondary" type="button" onClick={loadOutcomeComparison} disabled={comparisonLoading}>
+              {comparisonLoading ? 'Updating...' : 'Refresh Comparison'}
+            </button>
+          </div>
+          <ul className="mt-3 grid gap-2">
+            {race.results.map((result) => (
+              <li key={`${result.horse_id}-${result.finish_position}`} className="tile">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-stone-900">
+                    {result.finish_position}. {result.horse_name}
+                  </p>
+                  <p className="text-xs text-stone-600">Post {result.post_position || '-'}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </article>
+      ) : race.status === 'official' ? (
+        <article className="panel">
+          <h3 className="text-base font-semibold">Official Finish</h3>
+          <p className="mt-2 text-sm text-stone-600">Race is official, but finish order has not been synced yet.</p>
+        </article>
+      ) : null}
+
+      {Array.isArray(race.results) && race.results.length ? (
+        <article className="panel">
+          <h3 className="text-base font-semibold">Prediction Vs Actual</h3>
+          {comparisonLoading ? <p className="mt-2 text-sm text-stone-500">Building comparison...</p> : null}
+          {comparisonError ? <p className="mt-2 text-sm text-rose-700">{comparisonError}</p> : null}
+
+          {outcomeComparison ? (
+            <>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div className="tile">
+                  <p className="tile-title">Winner</p>
+                  <p className="tile-value text-base">{outcomeComparison.summary?.winnerHorse || '-'}</p>
+                  <p className="text-xs text-stone-600">
+                    Model rank {outcomeComparison.summary?.winnerModelRank ?? '-'} • Ending odds{' '}
+                    {outcomeComparison.summary?.winnerEndingOdds || '-'}
+                  </p>
+                </div>
+                <div className="tile">
+                  <p className="tile-title">Model Top Pick</p>
+                  <p className="tile-value text-base">{outcomeComparison.summary?.modelTopPick || '-'}</p>
+                  <p className="text-xs text-stone-600">
+                    Finished {outcomeComparison.summary?.modelTopPickFinish ?? '-'} • MAE{' '}
+                    {Number.isFinite(Number(outcomeComparison.summary?.meanAbsoluteRankError))
+                      ? Number(outcomeComparison.summary.meanAbsoluteRankError).toFixed(3)
+                      : '-'}
+                  </p>
+                </div>
+                <div className="tile">
+                  <p className="tile-title">Exacta Order</p>
+                  <p className={`tile-value text-base ${outcomeComparison.summary?.exactaOrderHit ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {outcomeComparison.summary?.exactaOrderHit ? 'Hit' : 'Miss'}
+                  </p>
+                </div>
+                <div className="tile">
+                  <p className="tile-title">Trifecta Order</p>
+                  <p className={`tile-value text-base ${outcomeComparison.summary?.trifectaOrderHit ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {outcomeComparison.summary?.trifectaOrderHit ? 'Hit' : 'Miss'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-2">
+                {Array.isArray(outcomeComparison.rows)
+                  ? outcomeComparison.rows.map((row) => (
+                      <div key={row.horseId} className="tile">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-stone-900">
+                              {row.finishPosition}. {row.horseName}
+                            </p>
+                            <p className="text-xs text-stone-600">
+                              Model #{row.modelRank ?? '-'} • Delta {formatSigned(row.rankDelta)} • Ending odds {row.endingOdds || '-'}
+                            </p>
+                          </div>
+                          <p className="rounded-full bg-stone-100 px-2 py-1 text-[11px] font-semibold text-stone-700">
+                            Model win {formatPercent(row.modelWinProbability)}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  : null}
+              </div>
+            </>
+          ) : null}
+        </article>
+      ) : null}
 
       <article className="panel">
         <h3 className="text-base font-semibold">Horses</h3>

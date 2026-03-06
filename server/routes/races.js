@@ -8,6 +8,11 @@ import {
   listTodayTomorrowPresets
 } from '../services/racePresets.js';
 import { importEquibaseRaces } from '../services/equibaseImporter.js';
+import {
+  setOfficialResultsAndSettle,
+  tryAutoFetchAndSettleRace
+} from '../services/raceResultsService.js';
+import { buildRaceOutcomeComparison } from '../services/raceOutcomeComparisonService.js';
 
 const BET_TYPES = ['exacta', 'quinella', 'trifecta', 'superfecta', 'super_hi_5'];
 
@@ -113,6 +118,31 @@ const listHorsesStmt = db.prepare(
    ORDER BY COALESCE(post_position, 999), id ASC`
 );
 
+const listExistingHorsesForRaceStmt = db.prepare(
+  `SELECT
+      name,
+      jockey,
+      trainer,
+      morning_line_odds,
+      brisnet_signal,
+      scratched
+   FROM horses
+   WHERE race_id = ?`
+);
+
+const listResultsStmt = db.prepare(
+  `SELECT
+      res.race_id,
+      res.horse_id,
+      res.finish_position,
+      h.name AS horse_name,
+      h.post_position
+   FROM results res
+   JOIN horses h ON h.id = res.horse_id
+   WHERE res.race_id = ?
+   ORDER BY res.finish_position ASC`
+);
+
 const insertRaceStmt = db.prepare(
   `INSERT INTO races (
       name,
@@ -194,6 +224,33 @@ const updateRaceStatusStmt = db.prepare(
    WHERE id = ?`
 );
 
+const normalizeHorseKey = (name) =>
+  String(name ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+
+const mergeHorseOnApiReimport = (incomingHorse, existingHorse) => {
+  if (!existingHorse) {
+    return incomingHorse;
+  }
+
+  const incomingOdds = String(incomingHorse.morning_line_odds ?? '').trim();
+  const existingOdds = String(existingHorse.morning_line_odds ?? '').trim();
+  const existingSignal = Number(existingHorse.brisnet_signal);
+
+  return {
+    ...incomingHorse,
+    jockey: incomingHorse.jockey || existingHorse.jockey || null,
+    trainer: incomingHorse.trainer || existingHorse.trainer || null,
+    morning_line_odds: existingOdds || incomingOdds || null,
+    brisnet_signal:
+      Number.isFinite(existingSignal) && existingSignal > 0
+        ? existingSignal
+        : incomingHorse.brisnet_signal,
+    scratched: Number(existingHorse.scratched) ? 1 : Number(incomingHorse.scratched) ? 1 : 0
+  };
+};
+
 const hydrateRace = (raceId) => {
   const race = getRaceStmt.get(raceId);
   if (!race) {
@@ -206,13 +263,38 @@ const hydrateRace = (raceId) => {
     speed_figures: jsonParseSafe(horse.speed_figures, [])
   }));
 
+  const results = listResultsStmt.all(raceId).map((row) => ({
+    race_id: row.race_id,
+    horse_id: row.horse_id,
+    horse_name: row.horse_name,
+    post_position: row.post_position,
+    finish_position: row.finish_position
+  }));
+
   return {
     ...race,
     race_config: jsonParseSafe(race.race_config_json, null),
     brisnet_config: jsonParseSafe(race.brisnet_config_json, null),
     sources: jsonParseSafe(race.sources_json, []),
-    horses
+    horses,
+    results
   };
+};
+
+const settleAndBroadcast = ({ io, raceId, settlement }) => {
+  if (!settlement) {
+    return;
+  }
+
+  io.emit('race_results', {
+    raceId,
+    settledCount: settlement.settledCount,
+    results: settlement.results
+  });
+  io.emit('bets_settled', {
+    raceId,
+    settledCount: settlement.settledCount
+  });
 };
 
 const createOrUpdateRaceTx = db.transaction((payload) => {
@@ -222,10 +304,16 @@ const createOrUpdateRaceTx = db.transaction((payload) => {
       : Number(process.env.DEFAULT_TAKEOUT_PCT ?? 0.22);
 
   let raceId;
+  let existingHorseByKey = new Map();
   if (payload.external_id) {
     const existing = getRaceByExternalIdStmt.get(payload.external_id);
     if (existing) {
       raceId = Number(existing.id);
+      existingHorseByKey = new Map(
+        listExistingHorsesForRaceStmt
+          .all(raceId)
+          .map((horse) => [normalizeHorseKey(horse.name), horse])
+      );
       updateRaceByIdStmt.run(
         payload.name,
         payload.track,
@@ -250,6 +338,11 @@ const createOrUpdateRaceTx = db.transaction((payload) => {
     const existingByIdentity = getRaceByIdentityStmt.get(payload.track, payload.race_number, payload.post_time);
     if (existingByIdentity) {
       raceId = Number(existingByIdentity.id);
+      existingHorseByKey = new Map(
+        listExistingHorsesForRaceStmt
+          .all(raceId)
+          .map((horse) => [normalizeHorseKey(horse.name), horse])
+      );
       updateRaceByIdStmt.run(
         payload.name,
         payload.track,
@@ -291,32 +384,37 @@ const createOrUpdateRaceTx = db.transaction((payload) => {
   }
 
   for (const horse of payload.horses) {
+    const key = normalizeHorseKey(horse.name);
+    const existingHorse = existingHorseByKey.get(key);
+    const mergedHorse =
+      payload.source === 'api' ? mergeHorseOnApiReimport(horse, existingHorse) : horse;
+
     insertHorseStmt.run(
       raceId,
-      horse.name,
-      horse.post_position,
-      horse.jockey,
-      horse.trainer,
-      horse.morning_line_odds,
-      horse.weight,
-      horse.age,
-      horse.sex,
-      horse.recent_form,
-      horse.speed_figures,
-      horse.jockey_win_pct,
-      horse.trainer_win_pct,
-      horse.class_rating,
-      horse.speed_rating,
-      horse.form_rating,
-      horse.pace_fit_rating,
-      horse.distance_fit_rating,
-      horse.connections_rating,
-      horse.consistency_rating,
-      horse.volatility_rating,
-      horse.late_kick_rating,
-      horse.improving_trend_rating,
-      horse.brisnet_signal,
-      horse.scratched
+      mergedHorse.name,
+      mergedHorse.post_position,
+      mergedHorse.jockey,
+      mergedHorse.trainer,
+      mergedHorse.morning_line_odds,
+      mergedHorse.weight,
+      mergedHorse.age,
+      mergedHorse.sex,
+      mergedHorse.recent_form,
+      mergedHorse.speed_figures,
+      mergedHorse.jockey_win_pct,
+      mergedHorse.trainer_win_pct,
+      mergedHorse.class_rating,
+      mergedHorse.speed_rating,
+      mergedHorse.form_rating,
+      mergedHorse.pace_fit_rating,
+      mergedHorse.distance_fit_rating,
+      mergedHorse.connections_rating,
+      mergedHorse.consistency_rating,
+      mergedHorse.volatility_rating,
+      mergedHorse.late_kick_rating,
+      mergedHorse.improving_trend_rating,
+      mergedHorse.brisnet_signal,
+      mergedHorse.scratched
     );
   }
 
@@ -494,6 +592,24 @@ export const createRacesRouter = (io) => {
     return res.json({ race });
   });
 
+  router.get('/:raceId(\\d+)/outcome-comparison', (req, res) => {
+    const raceId = Number(req.params.raceId);
+    const bankroll = Number(req.query.bankroll);
+
+    if (!Number.isInteger(raceId) || raceId <= 0) {
+      return res.status(400).json({ error: 'Invalid race id.' });
+    }
+
+    try {
+      const comparison = buildRaceOutcomeComparison(raceId, bankroll);
+      return res.json({ comparison });
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : 'Unable to build outcome comparison.'
+      });
+    }
+  });
+
   router.post('/', (req, res) => {
     const parsed = validateCreateRaceInput(req.body);
     if (parsed.error) {
@@ -507,9 +623,14 @@ export const createRacesRouter = (io) => {
     return res.status(201).json({ race });
   });
 
-  router.patch('/:raceId(\\d+)/status', (req, res) => {
+  router.patch('/:raceId(\\d+)/status', async (req, res) => {
     const raceId = Number(req.params.raceId);
     const status = typeof req.body?.status === 'string' ? req.body.status.trim() : '';
+    const finishOrderInput = Array.isArray(req.body?.finishOrder)
+      ? req.body.finishOrder
+      : Array.isArray(req.body?.results)
+        ? req.body.results
+        : [];
     const allowed = new Set(['upcoming', 'open', 'closed', 'official']);
 
     if (!Number.isInteger(raceId) || raceId <= 0) {
@@ -525,9 +646,98 @@ export const createRacesRouter = (io) => {
       return res.status(404).json({ error: 'Race not found.' });
     }
 
+    const warnings = [];
+    let settlement = null;
+    let autoResultImport = null;
+
+    if (status === 'closed' || status === 'official') {
+      try {
+        if (finishOrderInput.length) {
+          settlement = setOfficialResultsAndSettle({
+            raceId,
+            finishOrder: finishOrderInput,
+            markOfficial: true
+          });
+        } else {
+          autoResultImport = await tryAutoFetchAndSettleRace({ raceId });
+          if (autoResultImport?.settled) {
+            settlement = autoResultImport.settlement;
+          } else if (autoResultImport?.message) {
+            warnings.push(autoResultImport.message);
+          }
+        }
+      } catch (error) {
+        warnings.push(error instanceof Error ? error.message : 'Failed to settle results.');
+      }
+    }
+
     const race = hydrateRace(raceId);
-    io.emit('race_status', { raceId, status });
-    return res.json({ race });
+    io.emit('race_status', { raceId, status: String(race?.status ?? status) });
+    settleAndBroadcast({ io, raceId, settlement });
+    return res.json({ race, settlement, autoResultImport, warnings });
+  });
+
+  router.put('/:raceId(\\d+)/results', (req, res) => {
+    const raceId = Number(req.params.raceId);
+    const finishOrder = Array.isArray(req.body?.finishOrder)
+      ? req.body.finishOrder
+      : Array.isArray(req.body?.results)
+        ? req.body.results
+        : [];
+    const markOfficial = req.body?.markOfficial !== false;
+
+    if (!Number.isInteger(raceId) || raceId <= 0) {
+      return res.status(400).json({ error: 'Invalid race id.' });
+    }
+
+    if (!finishOrder.length) {
+      return res.status(400).json({ error: 'finishOrder (array) is required.' });
+    }
+
+    try {
+      const settlement = setOfficialResultsAndSettle({
+        raceId,
+        finishOrder,
+        markOfficial
+      });
+      const race = hydrateRace(raceId);
+      if (!race) {
+        return res.status(404).json({ error: 'Race not found.' });
+      }
+      io.emit('race_status', { raceId, status: String(race.status) });
+      settleAndBroadcast({ io, raceId, settlement });
+      return res.json({ race, settlement });
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to set results.' });
+    }
+  });
+
+  router.post('/:raceId(\\d+)/results/refresh', async (req, res) => {
+    const raceId = Number(req.params.raceId);
+    if (!Number.isInteger(raceId) || raceId <= 0) {
+      return res.status(400).json({ error: 'Invalid race id.' });
+    }
+
+    try {
+      const autoResultImport = await tryAutoFetchAndSettleRace({ raceId });
+      const settlement = autoResultImport?.settled ? autoResultImport.settlement : null;
+      const race = hydrateRace(raceId);
+      if (!race) {
+        return res.status(404).json({ error: 'Race not found.' });
+      }
+      io.emit('race_status', { raceId, status: String(race.status) });
+      settleAndBroadcast({ io, raceId, settlement });
+      return res.json({
+        race,
+        settlement,
+        autoResultImport
+      });
+    } catch (error) {
+      return res.status(502).json({
+        error: 'Failed to refresh official results.',
+        detail: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
   });
 
   return router;
